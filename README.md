@@ -15,7 +15,7 @@ A lightweight, decoupled training environment for circlestone-labs' Anima model,
 
 ### 1. Clone the repository
 ```bash
-git clone https://github.com/your-username/Anima-Standalone-Trainer.git
+git clone https://github.com/gazingstars123/Anima-Standalone-Trainer.git
 cd Anima-Standalone-Trainer
 ```
 
