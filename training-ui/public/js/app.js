@@ -128,7 +128,7 @@ async function selectJob(name) {
 
     // Load available GPUs
     await loadGPUs();
-    
+
     // Load job data
     const data = await api(`/api/jobs/${name}`);
     populateConfig(data.config);
@@ -259,10 +259,10 @@ function populateDataset(dataset) {
     $('cfg-keep-tokens').value = s.keep_tokens ?? 1;
 
     // Caption Settings
-    $('cfg-caption-dropout').value = s.caption_dropout_rate ?? 0.05;
-    $('cfg-tag-dropout').value = s.caption_tag_dropout_rate ?? 0.05;
+    $('cfg-caption-dropout').value = s.caption_dropout_rate ?? 0.0;
+    $('cfg-tag-dropout').value = s.caption_tag_dropout_rate ?? 0.0;
     $('cfg-dropout-every-n').value = s.caption_dropout_every_n_epochs ?? 0;
-    $('cfg-shuffle-caption').checked = s.shuffle_caption ?? true;
+    $('cfg-shuffle-caption').checked = s.shuffle_caption ?? false;
 
     $('cfg-enable-bucket').checked = g.enable_bucket ?? true;
     $('cfg-min-bucket').value = g.min_bucket_reso ?? 512;
@@ -2210,9 +2210,9 @@ async function init() {
     connectWS();
     await loadJobs();
 
-     // Start status polling
-        setInterval(updateGPUActivity, 3000);
-    
+    // Start status polling
+    setInterval(updateGPUActivity, 3000);
+
     // Restore Job
     const lastJob = localStorage.getItem('lastJob');
     if (lastJob) {

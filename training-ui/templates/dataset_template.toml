@@ -13,3 +13,5 @@ caption_extension = ".txt"
   image_dir = ""
   num_repeats = 1
   keep_tokens = 1
+  shuffle_caption = false
+  caption_tag_dropout_rate = 0.0
