@@ -1242,8 +1242,58 @@ app.post('/api/jobs/:name/train/start', async (req, res) => {
                 // Set explicit GPUs
                 gpuEnv = buildEnvVar('CUDA_VISIBLE_DEVICES', safeGpuString);
 
+                const mixedPrec = mergedConfig.training_arguments?.mixed_precision || 'bf16';
+
                 if (validIds.length > 1) {
-                    accelerateFlags = `--multi_gpu --num_processes ${validIds.length}`;
+                    if (mergedConfig.training_arguments?.use_fsdp) {
+                        // FSDP Support (Mutually exclusive with --multi_gpu)
+                        accelerateFlags = `--use_fsdp --num_processes ${validIds.length} --mixed_precision ${mixedPrec}`;
+                        accelerateFlags += ` --fsdp_sharding_strategy ${mergedConfig.training_arguments.fsdp_sharding_strategy || 1}`;
+                        // cpu_ram_efficient_loading: only rank 0 loads from disk, others receive via broadcast.
+                        // accelerate requires sync_module_states=true alongside it — emit both together.
+                        if (mergedConfig.training_arguments.fsdp_cpu_ram_efficient_loading) {
+                            accelerateFlags += ` --fsdp_sync_module_states true --fsdp_cpu_ram_efficient_loading true`;
+                        }
+                        if (mergedConfig.training_arguments.fsdp_offload_params) {
+                            accelerateFlags += ` --fsdp_offload_params true`;
+                        }
+                        if (mergedConfig.training_arguments.fsdp_reshard_after_forward) {
+                            accelerateFlags += ` --fsdp_reshard_after_forward true`;
+                        }
+                        if (mergedConfig.training_arguments.fsdp_activation_checkpointing) {
+                            accelerateFlags += ` --fsdp_activation_checkpointing true`;
+                        }
+                        if (mergedConfig.training_arguments.fsdp_backward_prefetch) {
+                            accelerateFlags += ` --fsdp_backward_prefetch ${mergedConfig.training_arguments.fsdp_backward_prefetch}`;
+                        }
+                        if (mergedConfig.training_arguments.fsdp_forward_prefetch) {
+                            accelerateFlags += ` --fsdp_forward_prefetch true`;
+                        }
+                        // use_orig_params defaults true - only emit false explicitly to override accelerate's default
+                        if (mergedConfig.training_arguments.fsdp_use_orig_params === false) {
+                            accelerateFlags += ` --fsdp_use_orig_params false`;
+                        }
+                        if (mergedConfig.training_arguments.fsdp_min_num_params) {
+                            accelerateFlags += ` --fsdp_min_num_params ${mergedConfig.training_arguments.fsdp_min_num_params}`;
+                        }
+                        if (mergedConfig.training_arguments.fsdp_auto_wrap_policy) {
+                            accelerateFlags += ` --fsdp_auto_wrap_policy ${mergedConfig.training_arguments.fsdp_auto_wrap_policy}`;
+                        }
+                        if (mergedConfig.training_arguments.fsdp_auto_wrap_policy === 'TRANSFORMER_BASED_WRAP') {
+                            const userCls = (mergedConfig.training_arguments.fsdp_transformer_layer_cls_to_wrap || '').trim();
+                            const archCls = getArchForJob(mergedConfig).fsdp_transformer_cls || '';
+                            const clsToWrap = userCls || archCls;
+                            if (clsToWrap) {
+                                accelerateFlags += ` --fsdp_transformer_layer_cls_to_wrap "${clsToWrap}"`;
+                            }
+                        }
+                    } else {
+                        // Standard DDP
+                        accelerateFlags = `--multi_gpu --num_processes ${validIds.length} --mixed_precision ${mixedPrec}`;
+                    }
+                } else {
+                    // Single GPU: always forward --mixed_precision to accelerate
+                    accelerateFlags = `--mixed_precision ${mixedPrec}`;
                 }
             }
         } catch (err) {
@@ -1265,9 +1315,14 @@ app.post('/api/jobs/:name/train/start', async (req, res) => {
         const targetScript = path.join(ROOT_DIR, scriptName);
 
         // Spawn training process
+        const isMultiGpu = currentGpuIds && currentGpuIds.split(',').map(s => s.trim()).filter(s => s.length > 0).length > 1;
         const trainEnvVars = [
             buildEnvVar('PYTHONIOENCODING', 'utf-8'),
-            gpuEnv
+            gpuEnv,
+            mergedConfig.training_arguments?.step_profile ? buildEnvVar('STEP_PROFILE', '1') : '',
+            (isWindows && isMultiGpu) ? buildEnvVar('USE_LIBUV', '0') : '',
+            (isWindows && isMultiGpu) ? buildEnvVar('MASTER_ADDR', '127.0.0.1') : '',
+            (isWindows && isMultiGpu) ? buildEnvVar('MASTER_PORT', '29500') : ''
         ].filter(Boolean).join('\n');
         const trainCmd = `python -m accelerate.commands.launch --num_cpu_threads_per_process 1 ${accelerateFlags} "${targetScript}" --config_file="${mergedConfigPath}"`;
         const trainScript = buildShellScript(venv.activate, trainEnvVars, trainCmd);

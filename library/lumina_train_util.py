@@ -14,7 +14,7 @@ from tqdm import tqdm
 from PIL import Image
 from safetensors.torch import save_file
 
-from library import lumina_models, strategy_base, strategy_lumina, train_util
+from library import lumina_models, save_utils, strategy_base, strategy_lumina, train_util
 from library.flux_models import AutoEncoder
 from library.device_utils import init_ipex, clean_memory_on_device
 from library.sd3_train_utils import FlowMatchEulerDiscreteScheduler
@@ -1040,6 +1040,7 @@ def save_models(
     sai_metadata: Dict[str, Any],
     save_dtype: Optional[torch.dtype] = None,
     use_mem_eff_save: bool = False,
+    state_dict: Optional[Dict[str, torch.Tensor]] = None,
 ):
     """
     Save the model to the checkpoint path.
@@ -1053,29 +1054,30 @@ def save_models(
     Return:
         None
     """
-    state_dict = {}
+    output_state_dict = {}
 
     def update_sd(prefix, sd):
         for k, v in sd.items():
             key = prefix + k
             if save_dtype is not None and v.dtype != save_dtype:
                 v = v.detach().clone().to("cpu").to(save_dtype)
-            state_dict[key] = v
+            output_state_dict[key] = v
 
-    update_sd("", lumina.state_dict())
+    update_sd("", lumina.state_dict() if state_dict is None else state_dict)
 
     if not use_mem_eff_save:
-        save_file(state_dict, ckpt_path, metadata=sai_metadata)
+        save_file(output_state_dict, ckpt_path, metadata=sai_metadata)
     else:
-        mem_eff_save_file(state_dict, ckpt_path, metadata=sai_metadata)
+        mem_eff_save_file(output_state_dict, ckpt_path, metadata=sai_metadata)
 
 
 def save_lumina_model_on_train_end(
     args: argparse.Namespace,
+    accelerator: Accelerator,
     save_dtype: torch.dtype,
     epoch: int,
     global_step: int,
-    lumina: lumina_models.NextDiT,
+    lumina,
 ):
     def sd_saver(ckpt_file, epoch_no, global_step):
         sai_metadata = train_util.get_sai_model_spec(
@@ -1087,7 +1089,14 @@ def save_lumina_model_on_train_end(
             is_stable_diffusion_ckpt=True,
             lumina="lumina2",
         )
-        save_models(ckpt_file, lumina, sai_metadata, save_dtype, args.mem_eff_save)
+        lumina_sd = save_utils.get_model_state_dict_for_save(
+            accelerator,
+            lumina,
+            save_utils.SAVE_INTENT_FULL_MODEL_EXPORT,
+            unwrap_model_for_non_fsdp=True,
+            keep_torch_compile=False,
+        )
+        save_models(ckpt_file, lumina, sai_metadata, save_dtype, args.mem_eff_save, state_dict=lumina_sd)
 
     train_util.save_sd_model_on_train_end_common(
         args, True, True, epoch, global_step, sd_saver, None
@@ -1104,7 +1113,7 @@ def save_lumina_model_on_epoch_end_or_stepwise(
     epoch: int,
     num_train_epochs: int,
     global_step: int,
-    lumina: lumina_models.NextDiT,
+    lumina,
 ):
     """
     Save the model to the checkpoint path.
@@ -1130,7 +1139,14 @@ def save_lumina_model_on_epoch_end_or_stepwise(
             is_stable_diffusion_ckpt=True,
             lumina="lumina2",
         )
-        save_models(ckpt_file, lumina, sai_metadata, save_dtype, args.mem_eff_save)
+        lumina_sd = save_utils.get_model_state_dict_for_save(
+            accelerator,
+            lumina,
+            save_utils.SAVE_INTENT_FULL_MODEL_EXPORT,
+            unwrap_model_for_non_fsdp=True,
+            keep_torch_compile=False,
+        )
+        save_models(ckpt_file, lumina, sai_metadata, save_dtype, args.mem_eff_save, state_dict=lumina_sd)
 
     train_util.save_sd_model_on_epoch_end_or_stepwise_common(
         args,

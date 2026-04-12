@@ -35,7 +35,8 @@
         }
       },
       "training_section": "anima_arguments",
-      "all_in_one": false
+      "all_in_one": false,
+      "fsdp_transformer_cls": "Block"
     },
     "lumina": {
       "display_name": "Lumina",
@@ -93,6 +94,7 @@
       },
       "training_section": "lumina_arguments",
       "all_in_one": true,
+      "fsdp_transformer_cls": "JointTransformerBlock",
       "all_in_one_source_key": "lumina_dit_path"
     }
   },

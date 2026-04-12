@@ -1646,3 +1646,10 @@ input:disabled, select:disabled {
 .tab-content {
     padding-bottom: max(38px, var(--hw-bar-height, 38px));
 }
+
+.disabled-section {
+    opacity: 0.4 !important;
+    pointer-events: none !important;
+    filter: grayscale(0.8);
+    transition: opacity 0.2s ease;
+}
