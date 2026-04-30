@@ -1,6 +1,7 @@
 # Anima Model Architecture
 # Original code: NVIDIA CORPORATION & AFFILIATES, licensed under Apache-2.0
 
+import importlib
 import math
 from typing import Any, Callable, List, Optional, Tuple, Union
 
@@ -124,12 +125,28 @@ def unsloth_checkpoint(function, *args):
 
 
 # Flash Attention support
-try:
-    from flash_attn.flash_attn_interface import flash_attn_func as _flash_attn_func
-    FLASH_ATTN_AVAILABLE = True
-except ImportError:
-    _flash_attn_func = None
-    FLASH_ATTN_AVAILABLE = False
+#
+# Keep backend selection centralized here so the rest of the model only needs to
+# call one attention wrapper. We currently prefer FA3 when available, then fall
+# back to FA2. This keeps the integration easy to extend later if we decide to
+# add FA4 support here as well.
+def _load_flash_attn_backend():
+    try:
+        flash_attn_interface = importlib.import_module("flash_attn_interface")
+        return "fa3", flash_attn_interface.flash_attn_func
+    except ImportError:
+        pass
+
+    try:
+        from flash_attn.flash_attn_interface import flash_attn_func as flash_attn_func
+
+        return "fa2", flash_attn_func
+    except ImportError:
+        return None, None
+
+
+FLASH_ATTN_BACKEND, _flash_attn_func = _load_flash_attn_backend()
+FLASH_ATTN_AVAILABLE = _flash_attn_func is not None
 
 # SageAttention support
 try:
@@ -168,7 +185,7 @@ def flash_attention_op(q_B_S_H_D: torch.Tensor, k_B_S_H_D: torch.Tensor, v_B_S_H
     Output format: (batch, seq_len, n_heads * head_dim) — matches torch_attention_op output.
     """
     try:
-        # Try Flash Attention 2
+        # The backend is selected once at import time.
         out = _flash_attn_func(q_B_S_H_D, k_B_S_H_D, v_B_S_H_D)
         return rearrange(out, "b s h d -> b s (h d)")
     except RuntimeError as e:
@@ -1038,8 +1055,10 @@ class Block(nn.Module):
                 # Standard cpu offload: blocking transfers
                 def create_custom_forward(func):
                     def custom_forward(*inputs):
-                        # Determine original device from first tensor input
-                        device = next(t.device for t in inputs if isinstance(t, torch.Tensor))
+                        device = next(
+                            (t.device for t in inputs if isinstance(t, torch.Tensor) and t.device.type != 'cpu'),
+                            torch.device('cuda'),
+                        )
                         device_inputs = to_device(inputs, device)
                         outputs = func(*device_inputs)
                         return to_cpu(outputs)
@@ -1212,6 +1231,8 @@ class MiniTrainDIT(nn.Module):
         """Toggle flash attention for all DiT blocks."""
         if use_flash_attn and not FLASH_ATTN_AVAILABLE:
             raise ImportError("flash_attn package is required for --flash_attn but is not installed")
+        if use_flash_attn:
+            logger.info(f"Using Flash Attention backend: {FLASH_ATTN_BACKEND}")
         attn_op = flash_attention_op if use_flash_attn else torch_attention_op
         for block in self.blocks:
             block.self_attn.attn_op = attn_op
@@ -1401,6 +1422,16 @@ class MiniTrainDIT(nn.Module):
                 if block_kwargs["extra_per_block_pos_emb"] is not None:
                     block_kwargs["extra_per_block_pos_emb"] = torch.nn.functional.pad(
                         block_kwargs["extra_per_block_pos_emb"], (0, 0, 0, 0, 0, _sp_h_pad))
+                # ColumnParallelLinear with SP all-gathers the sequence before the
+                # q/k/v matmuls, so RoPE sees the full padded length T*H_padded*W.
+                # Extend the RoPE table to cover the extra pad positions (zero-fill
+                # is fine — pad tokens are masked out / discarded after allgather).
+                if block_kwargs["rope_emb_L_1_1_D"] is not None:
+                    T_val = x_B_T_H_W_D.shape[1]
+                    W_val = x_B_T_H_W_D.shape[3]
+                    rope_extra = T_val * _sp_h_pad * W_val
+                    block_kwargs["rope_emb_L_1_1_D"] = torch.nn.functional.pad(
+                        block_kwargs["rope_emb_L_1_1_D"], (0, 0, 0, 0, 0, 0, 0, rope_extra))
             x_B_T_H_W_D = _split_along_dim(x_B_T_H_W_D, _sp_group, seq_dim=2)
             if block_kwargs["extra_per_block_pos_emb"] is not None:
                 block_kwargs["extra_per_block_pos_emb"] = _split_along_dim(

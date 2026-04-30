@@ -419,13 +419,16 @@ function populateConfig(config) {
   $("cfg-ddp-gradient-as-bucket-view").checked =
     t.ddp_gradient_as_bucket_view ?? false;
   $("cfg-ddp-static-graph").checked = t.ddp_static_graph ?? false;
-  // Multi-GPU mode selector (ddp/fsdp/fsdp2/tp_sp) — backward compat: infer from use_fsdp
-  const restoredMode = t.multigpu_mode || (t.use_fsdp ? "fsdp" : "ddp");
+  // Multi-GPU mode selector (ddp/fsdp/fsdp2/deepspeed/tp_sp) — backward compat: infer from use_fsdp
+  const restoredMode =
+    t.multigpu_mode || (t.deepspeed ? "deepspeed" : t.use_fsdp ? "fsdp" : "ddp");
   $("cfg-multigpu-mode").value = restoredMode;
   applyMultiGpuMode(restoredMode);
   // TP/SP options
   if (t.tp_degree) $("cfg-tp-degree").value = t.tp_degree;
-  $("cfg-sequence-parallel").checked = t.sequence_parallel ?? false;
+  if ($("cfg-tp-backend")) $("cfg-tp-backend").value = t.tp_backend || "auto";
+  $("cfg-sequence-parallel").checked = true;
+  if ($("cfg-no-fuse-qkv")) $("cfg-no-fuse-qkv").checked = t.no_fuse_qkv ?? false;
   $("cfg-fsdp-sharding-strategy").value = t.fsdp_sharding_strategy || "1";
   $("cfg-fsdp-offload-params").checked = t.fsdp_offload_params ?? false;
   $("cfg-fsdp-reshard-after-forward").checked =
@@ -467,6 +470,21 @@ function populateConfig(config) {
     "hidden",
     $("cfg-fsdp2-auto-wrap-policy").value !== "SIZE_BASED_WRAP",
   );
+  // DeepSpeed restore
+  $("cfg-ds-zero-stage").value = String(t.zero_stage ?? 2);
+  $("cfg-ds-offload-optimizer-device").value =
+    t.offload_optimizer_device || "none";
+  $("cfg-ds-offload-optimizer-nvme-path").value =
+    t.offload_optimizer_nvme_path || "";
+  $("cfg-ds-offload-param-device").value = t.offload_param_device || "none";
+  $("cfg-ds-offload-param-nvme-path").value =
+    t.offload_param_nvme_path || "";
+  $("cfg-ds-zero3-init-flag").checked = t.zero3_init_flag ?? false;
+  $("cfg-ds-zero3-save-16bit-model").checked =
+    t.zero3_save_16bit_model ?? false;
+  $("cfg-ds-fp16-master-weights-and-gradients").checked =
+    t.fp16_master_weights_and_gradients ?? false;
+  updateDeepspeedOffloadUI();
   $("cfg-step-profile").checked = t.step_profile ?? false;
   $("cfg-profile-microbatch").checked = t.profile_microbatch ?? false;
   $("cfg-profile-microbatch-group").style.display = (t.step_profile ?? false) ? "" : "none";
@@ -494,12 +512,16 @@ function populateConfig(config) {
   // Anima
   $("cfg-timestep-method").value = a.timestep_sample_method || "logit_normal";
   $("cfg-flow-shift").value = a.discrete_flow_shift ?? 3.0;
-  // Network
+  // Network / Training type
+  const trainingType = n.network_module ? "lora" : "full_finetune";
+  $("cfg-training-type").value = trainingType;
+  updateTrainingTypeUI(trainingType);
   $("cfg-network-module").value = n.network_module || "networks.lora_anima";
   $("cfg-network-dim").value = n.network_dim ?? 16;
   $("cfg-network-alpha").value = n.network_alpha ?? 16;
   $("cfg-unet-only").checked = n.network_train_unet_only ?? true;
   $("cfg-network-weights").value = n.network_weights || "";
+  $("cfg-freeze-llm-adapter").checked = t.freeze_llm_adapter ?? true;
   $("cfg-auto-resume").checked = n.auto_resume_last_state ?? false;
   $("cfg-resume").value = n.resume || "";
   $("cfg-resume").disabled = $("cfg-auto-resume").checked;
@@ -602,6 +624,9 @@ function gatherConfig() {
   ).value;
   const isEpochs = unit === "epochs";
   const enableSampling = $("cfg-enable-sampling").checked;
+  const isMultiGpu =
+    document.querySelectorAll('input[name="gpu-select"]:checked').length > 1;
+  const multiGpuMode = $("cfg-multigpu-mode").value;
   const optimizerArgs = [];
   const wdValue = $("cfg-weight-decay").value;
   if (wdValue !== "") {
@@ -675,34 +700,52 @@ function gatherConfig() {
       ...($("cfg-disable-bucket-shuffle").checked && {
         disable_bucket_shuffle: true,
       }),
-      multigpu_mode:
-        document.querySelectorAll('input[name="gpu-select"]:checked').length > 1
-          ? $("cfg-multigpu-mode").value
-          : "ddp",
-      ...($("cfg-multigpu-mode").value === "tp_sp" &&
-        document.querySelectorAll('input[name="gpu-select"]:checked').length > 1
+      multigpu_mode: isMultiGpu ? multiGpuMode : "ddp",
+      ...(multiGpuMode === "tp_sp" && isMultiGpu
           ? {
               tp_degree: safeInt($("cfg-tp-degree").value) || 2,
-              sequence_parallel: $("cfg-sequence-parallel").checked,
+              tp_backend: $("cfg-tp-backend")?.value || "auto",
+              sequence_parallel: true,
+              ...($("cfg-no-fuse-qkv")?.checked ? { no_fuse_qkv: true } : {}),
             }
           : {}),
-      use_cuda_direct:
-        document.querySelectorAll('input[name="gpu-select"]:checked').length > 1
-          ? $("cfg-use-cuda-direct").checked
-          : false,
-      ddp_gradient_as_bucket_view:
-        document.querySelectorAll('input[name="gpu-select"]:checked').length > 1
-          ? $("cfg-ddp-gradient-as-bucket-view").checked
-          : false,
-      ddp_static_graph:
-        document.querySelectorAll('input[name="gpu-select"]:checked').length > 1
-          ? $("cfg-ddp-static-graph").checked
-          : false,
+      ...(multiGpuMode === "deepspeed" && isMultiGpu
+        ? {
+            deepspeed: true,
+            zero_stage: safeInt($("cfg-ds-zero-stage").value, 2),
+            offload_optimizer_device:
+              $("cfg-ds-offload-optimizer-device").value !== "none"
+                ? $("cfg-ds-offload-optimizer-device").value
+                : undefined,
+            offload_optimizer_nvme_path:
+              $("cfg-ds-offload-optimizer-device").value === "nvme"
+                ? $("cfg-ds-offload-optimizer-nvme-path").value.trim() ||
+                  undefined
+                : undefined,
+            offload_param_device:
+              $("cfg-ds-offload-param-device").value !== "none"
+                ? $("cfg-ds-offload-param-device").value
+                : undefined,
+            offload_param_nvme_path:
+              $("cfg-ds-offload-param-device").value === "nvme"
+                ? $("cfg-ds-offload-param-nvme-path").value.trim() || undefined
+                : undefined,
+            zero3_init_flag: $("cfg-ds-zero3-init-flag").checked,
+            zero3_save_16bit_model: $("cfg-ds-zero3-save-16bit-model").checked,
+            fp16_master_weights_and_gradients: $(
+              "cfg-ds-fp16-master-weights-and-gradients",
+            ).checked,
+          }
+        : { deepspeed: false }),
+      use_cuda_direct: isMultiGpu ? $("cfg-use-cuda-direct").checked : false,
+      ddp_gradient_as_bucket_view: isMultiGpu
+        ? $("cfg-ddp-gradient-as-bucket-view").checked
+        : false,
+      ddp_static_graph: isMultiGpu ? $("cfg-ddp-static-graph").checked : false,
       // FSDP Configs
-      use_fsdp:
-        document.querySelectorAll('input[name="gpu-select"]:checked').length > 1
-          ? ($("cfg-multigpu-mode").value === "fsdp" || $("cfg-multigpu-mode").value === "fsdp2")
-          : false,
+      use_fsdp: isMultiGpu
+        ? multiGpuMode === "fsdp" || multiGpuMode === "fsdp2"
+        : false,
       fsdp_sharding_strategy: $("cfg-fsdp-sharding-strategy").value,
       fsdp_offload_params: $("cfg-fsdp-offload-params").checked,
       fsdp_reshard_after_forward: $("cfg-fsdp-reshard-after-forward").checked,
@@ -727,6 +770,10 @@ function gatherConfig() {
       fsdp2_auto_wrap_policy: $("cfg-fsdp2-auto-wrap-policy").value,
       fsdp2_min_num_params: safeInt($("cfg-fsdp2-min-num-params").value),
       fsdp2_transformer_layer_cls_to_wrap: $("cfg-fsdp2-layer-to-wrap").value.trim(),
+      // FFT options
+      ...($("cfg-training-type").value === "full_finetune" && $("cfg-freeze-llm-adapter").checked
+        ? { freeze_llm_adapter: true }
+        : {}),
       // Diagnostics
       step_profile: $("cfg-step-profile").checked,
       profile_microbatch: $("cfg-profile-microbatch").checked,
@@ -743,23 +790,28 @@ function gatherConfig() {
         return { resolution_schedule: parts.join(",") };
       })(),
     },
-    network_arguments: {
-      network_module: $("cfg-network-module").value,
-      network_dim: safeInt($("cfg-network-dim").value),
-      network_alpha: safeInt($("cfg-network-alpha").value),
-      network_train_unet_only: $("cfg-unet-only").checked,
-      ...(safeFloat($("cfg-network-dropout").value) > 0 && {
-        network_dropout: safeFloat($("cfg-network-dropout").value),
-      }),
-      ...($("cfg-network-args").value.trim() && {
-        network_args: $("cfg-network-args").value.trim().split(/\s+/),
-      }),
-      ...($("cfg-network-weights").value && {
-        network_weights: $("cfg-network-weights").value,
-      }),
-      auto_resume_last_state: $("cfg-auto-resume").checked,
-      ...($("cfg-resume").value && !$("cfg-auto-resume").checked && { resume: $("cfg-resume").value }),
-    },
+    network_arguments: $("cfg-training-type").value === "full_finetune"
+      ? {
+          auto_resume_last_state: $("cfg-auto-resume").checked,
+          ...($("cfg-resume").value && !$("cfg-auto-resume").checked && { resume: $("cfg-resume").value }),
+        }
+      : {
+          network_module: $("cfg-network-module").value,
+          network_dim: safeInt($("cfg-network-dim").value),
+          network_alpha: safeInt($("cfg-network-alpha").value),
+          network_train_unet_only: $("cfg-unet-only").checked,
+          ...(safeFloat($("cfg-network-dropout").value) > 0 && {
+            network_dropout: safeFloat($("cfg-network-dropout").value),
+          }),
+          ...($("cfg-network-args").value.trim() && {
+            network_args: $("cfg-network-args").value.trim().split(/\s+/),
+          }),
+          ...($("cfg-network-weights").value && {
+            network_weights: $("cfg-network-weights").value,
+          }),
+          auto_resume_last_state: $("cfg-auto-resume").checked,
+          ...($("cfg-resume").value && !$("cfg-auto-resume").checked && { resume: $("cfg-resume").value }),
+        },
     anima_arguments: {
       timestep_sample_method: $("cfg-timestep-method").value,
       discrete_flow_shift: safeFloat($("cfg-flow-shift").value),
@@ -1071,6 +1123,17 @@ function discardChanges() {
 $("cfg-step-profile").addEventListener("change", (e) => {
   $("cfg-profile-microbatch-group").style.display = e.target.checked ? "" : "none";
   if (!e.target.checked) $("cfg-profile-microbatch").checked = false;
+});
+
+// Show/hide LoRA-specific fields based on training type
+function updateTrainingTypeUI(type) {
+  const isLora = type === "lora";
+  $("lora-config-section").classList.toggle("hidden", !isLora);
+  $("fft-config-section").classList.toggle("hidden", isLora);
+}
+$("cfg-training-type").addEventListener("change", (e) => {
+  updateTrainingTypeUI(e.target.value);
+  checkDirty();
 });
 
 // Disable manual resume path when auto-resume is enabled
@@ -2598,17 +2661,46 @@ function applyMultiGpuMode(mode) {
   const ddpGroup   = $("group-ddp-opts");
   const fsdpGroup  = $("group-fsdp");
   const fsdp2Group = $("group-fsdp2");
+  const dsGroup    = $("group-deepspeed");
   const tpGroup    = $("group-tp-sp");
   if (!ddpGroup || !fsdpGroup || !tpGroup) return;
 
   ddpGroup.classList.toggle("hidden",   mode !== "ddp");
   fsdpGroup.classList.toggle("hidden",  mode !== "fsdp");
   if (fsdp2Group) fsdp2Group.classList.toggle("hidden", mode !== "fsdp2");
+  if (dsGroup) dsGroup.classList.toggle("hidden", mode !== "deepspeed");
   tpGroup.classList.toggle("hidden",    mode !== "tp_sp");
 
   // Keep hidden checkbox in sync so reconcileFSDPConflicts still works
   const fsdpToggle = $("cfg-use-fsdp");
   if (fsdpToggle) fsdpToggle.checked = (mode === "fsdp" || mode === "fsdp2");
+
+  updateCudaDirectForTpSp();
+  updateDeepspeedOffloadUI();
+}
+
+function updateCudaDirectForTpSp() {
+  const cudaGroup  = $("group-cuda-direct");
+  const cudaToggle = $("cfg-use-cuda-direct");
+  if (!cudaGroup || !cudaToggle) return;
+
+  const mode   = $("cfg-multigpu-mode")?.value;
+  const lockCudaDirect = mode === "tp_sp" || mode === "deepspeed";
+
+  cudaGroup.classList.toggle("disabled-section", lockCudaDirect);
+  cudaToggle.disabled = lockCudaDirect;
+  if (lockCudaDirect) cudaToggle.checked = false;
+}
+
+function updateDeepspeedOffloadUI() {
+  const optDevice = $("cfg-ds-offload-optimizer-device");
+  const paramDevice = $("cfg-ds-offload-param-device");
+  const optNvmeGroup = $("ds-offload-opt-nvme-group");
+  const paramNvmeGroup = $("ds-offload-param-nvme-group");
+  if (!optDevice || !paramDevice || !optNvmeGroup || !paramNvmeGroup) return;
+
+  optNvmeGroup.classList.toggle("hidden", optDevice.value !== "nvme");
+  paramNvmeGroup.classList.toggle("hidden", paramDevice.value !== "nvme");
 }
 
 function updateMultiGPUUI() {
@@ -2626,13 +2718,17 @@ function updateMultiGPUUI() {
     // directly, so this just keeps the display honest.
     const tpDegreeInput = $("cfg-tp-degree");
     if (tpDegreeInput) tpDegreeInput.value = count;
+    const tpBackend = $("cfg-tp-backend");
+    if (tpBackend && !tpBackend.value) tpBackend.value = "auto";
+    const spToggle = $("cfg-sequence-parallel");
+    if (spToggle) spToggle.checked = true;
     applyMultiGpuMode($("cfg-multigpu-mode")?.value || "ddp");
   } else {
     // Single GPU — disable mode selector and cuda-direct, hide all panels
     if (modeGroup) modeGroup.classList.add("disabled-section");
     cudaGroup.classList.add("disabled-section");
     cudaToggle.checked = false;
-    ["group-ddp-opts", "group-fsdp", "group-fsdp2", "group-tp-sp"].forEach(id => {
+    ["group-ddp-opts", "group-fsdp", "group-fsdp2", "group-deepspeed", "group-tp-sp"].forEach(id => {
       const el = $(id);
       if (el) el.classList.add("hidden");
     });
@@ -2737,6 +2833,10 @@ document.addEventListener("DOMContentLoaded", () => {
       reconcileFSDPConflicts();
     });
   }
+  const dsOptDevice = $("cfg-ds-offload-optimizer-device");
+  const dsParamDevice = $("cfg-ds-offload-param-device");
+  if (dsOptDevice) dsOptDevice.addEventListener("change", updateDeepspeedOffloadUI);
+  if (dsParamDevice) dsParamDevice.addEventListener("change", updateDeepspeedOffloadUI);
   // fsdpToggle is a hidden input
   if (cudaDirectToggle) {
     cudaDirectToggle.addEventListener("change", reconcileFSDPConflicts);
@@ -2783,6 +2883,7 @@ document.addEventListener("DOMContentLoaded", () => {
     strategySelect.addEventListener("change", window.updateFSDPInfoBox);
     window.updateFSDPInfoBox(); // Initial call
   }
+  updateDeepspeedOffloadUI();
   // Initial reconcile call
   reconcileFSDPConflicts();
 });

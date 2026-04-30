@@ -2,6 +2,7 @@
 
 import argparse
 import math
+import os
 from typing import Any, Optional, Union
 
 import torch
@@ -85,8 +86,9 @@ class AnimaNetworkTrainer(train_network.NetworkTrainer):
         # Attention: validate availability
         if getattr(args, 'flash_attn', False):
             try:
-                import flash_attn  # noqa: F401
-                logger.info("Flash Attention enabled for DiT blocks")
+                if not anima_models.FLASH_ATTN_AVAILABLE:
+                    raise ImportError("No supported Flash Attention backend is installed")
+                logger.info(f"Flash Attention enabled for DiT blocks ({anima_models.FLASH_ATTN_BACKEND})")
             except ImportError:
                 logger.warning("flash_attn package not installed, falling back to PyTorch SDPA")
                 args.flash_attn = False

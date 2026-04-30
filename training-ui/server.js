@@ -1,39 +1,13 @@
 const express = require('express');
-const { spawn, execSync, execFileSync } = require('child_process');
+const { spawn, execFileSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 const TOML = require('@iarna/toml');
 const net = require('net');
 const http = require('http');
 const WebSocket = require('ws');
-const os = require('os');
 
-function execWindowsPowerShellSync(script, options = {}) {
-    return execFileSync('powershell', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', script], {
-        ...options,
-        stdio: options.stdio ?? 'pipe',
-        windowsHide: options.windowsHide ?? true
-    });
-}
-
-// Auto-install cuda_direct_backend Windows only
-(function ensureCudaDirectBackend() {
-    if (process.platform !== 'win32') return;
-    try {
-        execWindowsPowerShellSync('python -c "import cuda_direct_backend"', { stdio: 'ignore' });
-    } catch {
-        const pkgPath = path.join(__dirname, '..', 'cuda_direct_pkg');
-        if (fs.existsSync(pkgPath)) {
-            console.log('[setup] Installing cuda_direct_backend...');
-            try {
-                execWindowsPowerShellSync(`python -m pip install --no-deps -e "${pkgPath}"`, { stdio: 'pipe' });
-                console.log('[setup] cuda_direct_backend installed.\n');
-            } catch {
-                console.warn('[setup] Could not install cuda_direct_backend. Multi-GPU cuda_direct will be unavailable.\n');
-            }
-        }
-    }
-})();
+require('./lib/setup').runSetup();
 
 const app = express();
 const server = http.createServer(app);
@@ -306,12 +280,12 @@ function getDefaultDataset() {
         if (fs.existsSync(f)) {
             try {
                 TOML.parse(fs.readFileSync(f, 'utf8'));
-                console.log(`✅ Template validated: ${path.basename(f)}`);
+                console.log(`Template validated: ${path.basename(f)}`);
             } catch (err) {
-                console.error(`❌ Template error in ${path.basename(f)}: ${err.message}`);
+                console.error(`Template error in ${path.basename(f)}: ${err.message}`);
             }
         } else {
-            console.warn(`⚠️  Template not found: ${path.basename(f)}`);
+            console.warn(`Template not found: ${path.basename(f)}`);
         }
     });
 })();
@@ -441,6 +415,12 @@ function buildTrainingConfig(jobName, jobPath) {
     delete merged.training_arguments.sample_every_n_epochs;
     delete merged.training_arguments.sample_every_n_steps;
 
+    // Convert freeze_llm_adapter flag → llm_adapter_lr: 0 (works for both DDP and TP+SP FFT)
+    if (merged.training_arguments.freeze_llm_adapter) {
+        merged.training_arguments.llm_adapter_lr = 0;
+    }
+    delete merged.training_arguments.freeze_llm_adapter;
+
     // Network arguments
     merged.network_arguments = { ...jobConfig.network_arguments };
     delete merged.network_arguments.resume;
@@ -461,7 +441,18 @@ function buildTrainingConfig(jobName, jobPath) {
 
 // --- WebSocket ---
 
+// Heartbeat: terminate dead connections so wss.clients never accumulates stale entries
+setInterval(() => {
+    wss.clients.forEach(ws => {
+        if (ws.isAlive === false) { ws.terminate(); return; }
+        ws.isAlive = false;
+        ws.ping();
+    });
+}, 30000);
+
 wss.on('connection', (ws) => {
+    ws.isAlive = true;
+    ws.on('pong', () => { ws.isAlive = true; });
     ws.subscribedJob = null;
 
     ws.on('message', (message) => {
@@ -869,7 +860,7 @@ function killProcess(pid, gracefulMs = 8000) {
             return;
         }
 
-        // SIGTERM → give the training script a chance to flush the last checkpoint
+        // SIGTERM -> give the training script a chance to flush the last checkpoint
         groupKill('SIGTERM');
 
         const timer = setTimeout(() => {
@@ -907,7 +898,7 @@ function openNative(target, isUrl = false) {
             // Already a Windows-style path (e.g. C:\foo), pass directly to explorer
             winTarget = target;
         } else {
-            // Linux path — convert to Windows UNC path via wslpath
+            // Linux path -> convert to Windows UNC path via wslpath
             winTarget = require('child_process').execSync(`wslpath -w "${target}"`).toString().trim();
         }
         spawn('explorer.exe', [winTarget]);
@@ -961,7 +952,7 @@ function buildEnvVar(name, value) {
 function buildLaunchConfig(gpuIds, mergedConfig, mergedConfigPath, jobArch) {
     const ta = mergedConfig.training_arguments || {};
     const mixedPrec = ta.mixed_precision || 'bf16';
-    const mode = ta.multigpu_mode || (ta.use_fsdp ? 'fsdp' : 'ddp');
+    const mode = ta.multigpu_mode || (ta.deepspeed ? 'deepspeed' : (ta.use_fsdp ? 'fsdp' : 'ddp'));
 
     let gpuEnv = '';
     let accelerateFlags = '';
@@ -979,12 +970,21 @@ function buildLaunchConfig(gpuIds, mergedConfig, mergedConfigPath, jobArch) {
 
         if (validIds.length > 1) {
             if (mode === 'tp_sp') {
-                const tpScript = jobArch.scripts?.train_network_tp_sp;
-                if (!tpScript)
-                    return { error: `TP/SP mode is not supported for the "${jobArch.id || 'current'}" architecture. No train_network_tp_sp script is defined.` };
+                const hasNet = !!(mergedConfig.network_arguments?.network_module);
+                const tpScript = hasNet
+                    ? jobArch.scripts?.train_network_tp_sp
+                    : jobArch.scripts?.train_tp_sp;
+                if (!tpScript) {
+                    const modeLabel = hasNet ? 'LoRA TP/SP' : 'Full Finetune TP/SP';
+                    return { error: `${modeLabel} is not supported for the "${jobArch.id || 'current'}" architecture.` };
+                }
                 const n = validIds.length;
                 const target = path.join(ROOT_DIR, tpScript);
-                tpTrainCmd = `python -m torch.distributed.run --nproc_per_node=${n} --master_addr 127.0.0.1 --master_port 29500 "${target}" --tp_degree ${n}${ta.sequence_parallel ? ' --sequence_parallel' : ''} --config_file="${mergedConfigPath}"`;
+                // Validate tp_backend against whitelist
+                const allowedBackends = ['nccl', 'cuda_direct', 'gloo', 'mpi'];
+                const rawBackend = ta.tp_backend || (isWindows ? 'gloo' : 'nccl');
+                const tpBackend = allowedBackends.includes(rawBackend) ? rawBackend : (isWindows ? 'gloo' : 'nccl');
+                tpTrainCmd = `python -m torch.distributed.run --nproc_per_node=${n} --master_addr 127.0.0.1 --master_port 29500 "${target}" --tp_degree ${n} --tp_backend ${tpBackend} --sequence_parallel --config_file="${mergedConfigPath}"`;
 
             } else if (mode === 'fsdp2') {
                 const reshard = ta.fsdp2_reshard_after_forward ?? true;
@@ -1021,6 +1021,29 @@ function buildLaunchConfig(gpuIds, mergedConfig, mergedConfigPath, jobArch) {
                         const cls = (ta.fsdp_transformer_layer_cls_to_wrap || '').trim() || (jobArch.fsdp_transformer_cls || '');
                         if (cls) accelerateFlags += ` --fsdp_transformer_layer_cls_to_wrap "${cls}"`;
                     }
+                }
+
+            } else if (mode === 'deepspeed') {
+                accelerateFlags = `--use_deepspeed --num_processes ${validIds.length} --mixed_precision ${mixedPrec}`;
+                const zeroStage = Number.isFinite(Number(ta.zero_stage)) ? Number(ta.zero_stage) : 2;
+                accelerateFlags += ` --zero_stage ${zeroStage}`;
+                if (ta.offload_optimizer_device) {
+                    accelerateFlags += ` --offload_optimizer_device ${ta.offload_optimizer_device}`;
+                }
+                if (ta.offload_optimizer_device === 'nvme' && ta.offload_optimizer_nvme_path) {
+                    accelerateFlags += ` --offload_optimizer_nvme_path "${ta.offload_optimizer_nvme_path}"`;
+                }
+                if (ta.offload_param_device) {
+                    accelerateFlags += ` --offload_param_device ${ta.offload_param_device}`;
+                }
+                if (ta.offload_param_device === 'nvme' && ta.offload_param_nvme_path) {
+                    accelerateFlags += ` --offload_param_nvme_path "${ta.offload_param_nvme_path}"`;
+                }
+                if (ta.zero3_init_flag) {
+                    accelerateFlags += ' --zero3_init_flag true';
+                }
+                if (ta.zero3_save_16bit_model) {
+                    accelerateFlags += ' --zero3_save_16bit_model true';
                 }
 
             } else {
@@ -1249,7 +1272,7 @@ app.post('/api/jobs/:name/generate', async (req, res) => {
         if (genGpuCount > 1) {
             const multiGpuMode = req.body.gen_multi_gpu_mode || 'parallel_cfg';
             args.push(`--device_map=${multiGpuMode}`);
-            // Force single process — both modes run one process across all GPUs
+            // Force single process -> both modes run one process across all GPUs
             genAccelerateFlags = '--num_processes 1';
         }
 
@@ -1446,16 +1469,48 @@ app.post('/api/jobs/:name/train/start', async (req, res) => {
 
         // TP/SP: strip options that are incompatible with the TP training script.
         const launchMode = mergedConfig.training_arguments?.multigpu_mode
-            || (mergedConfig.training_arguments?.use_fsdp ? 'fsdp' : 'ddp');
+            || (mergedConfig.training_arguments?.deepspeed ? 'deepspeed' : (mergedConfig.training_arguments?.use_fsdp ? 'fsdp' : 'ddp'));
         if (launchMode === 'tp_sp' && mergedConfig.training_arguments) {
+            mergedConfig.training_arguments.sequence_parallel = true;
+            // Normalize tp_degree with NaN guard
+            let tp = Number(mergedConfig.training_arguments.tp_degree || 2);
+            if (!Number.isFinite(tp)) tp = 2;
+            mergedConfig.training_arguments.tp_degree = Math.max(2, tp);
+            // Validate tp_backend against whitelist
+            const allowedBackends = ['nccl', 'cuda_direct', 'gloo', 'mpi'];
+            const rawBackend = mergedConfig.training_arguments.tp_backend || (isWindows ? 'gloo' : 'nccl');
+            mergedConfig.training_arguments.tp_backend = allowedBackends.includes(rawBackend) ? rawBackend : (isWindows ? 'gloo' : 'nccl');
+            delete mergedConfig.training_arguments.use_cuda_direct;
             delete mergedConfig.training_arguments.save_state;
+            delete mergedConfig.training_arguments.save_state_on_train_end;
+            delete mergedConfig.training_arguments.save_last_n_steps_state;
+            delete mergedConfig.training_arguments.save_last_n_epochs_state;
+        } else if (mergedConfig.training_arguments) {
+            delete mergedConfig.training_arguments.no_fuse_qkv;
+            delete mergedConfig.training_arguments.tp_backend;
+            delete mergedConfig.training_arguments.tp_degree;
+            delete mergedConfig.training_arguments.sequence_parallel;
+        }
+
+        if (mergedConfig.training_arguments && launchMode !== 'deepspeed') {
+            delete mergedConfig.training_arguments.deepspeed;
+            delete mergedConfig.training_arguments.zero_stage;
+            delete mergedConfig.training_arguments.offload_optimizer_device;
+            delete mergedConfig.training_arguments.offload_optimizer_nvme_path;
+            delete mergedConfig.training_arguments.offload_param_device;
+            delete mergedConfig.training_arguments.offload_param_nvme_path;
+            delete mergedConfig.training_arguments.zero3_init_flag;
+            delete mergedConfig.training_arguments.zero3_save_16bit_model;
+            delete mergedConfig.training_arguments.fp16_master_weights_and_gradients;
+        } else if (mergedConfig.training_arguments) {
+            mergedConfig.training_arguments.deepspeed = true;
         }
 
         // Convert Windows paths to WSL paths when running under WSL
         if (isWSL) {
             // Convert all paths in merged config (model paths, output dirs, etc.)
             const converted = convertPathsInObject(mergedConfig);
-            // Also convert image_dir entries inside dataset.toml → write a WSL version
+            // Also convert image_dir entries inside dataset.toml -> write a WSL version
             const datasetPath = path.join(jobPath, 'dataset.toml');
             if (fs.existsSync(datasetPath)) {
                 const datasetRaw = TOML.parse(fs.readFileSync(datasetPath, 'utf8'));
@@ -1499,7 +1554,7 @@ app.post('/api/jobs/:name/train/start', async (req, res) => {
         const { gpuEnv, accelerateFlags, tpTrainCmd } = launch;
 
         const resolvedMode = mergedConfig.training_arguments?.multigpu_mode
-            || (mergedConfig.training_arguments?.use_fsdp ? 'fsdp' : 'ddp');
+            || (mergedConfig.training_arguments?.deepspeed ? 'deepspeed' : (mergedConfig.training_arguments?.use_fsdp ? 'fsdp' : 'ddp'));
 
         let trainCmd;
         if (resolvedMode === 'tp_sp' && tpTrainCmd) {
@@ -1514,6 +1569,7 @@ app.post('/api/jobs/:name/train/start', async (req, res) => {
         const isMultiGpu = currentGpuIds && currentGpuIds.split(',').map(s => s.trim()).filter(s => s.length > 0).length > 1;
         const trainEnvVars = [
             buildEnvVar('PYTHONIOENCODING', 'utf-8'),
+            buildEnvVar('TOKENIZERS_PARALLELISM', 'false'),
             gpuEnv,
             mergedConfig.training_arguments?.step_profile ? buildEnvVar('STEP_PROFILE', '1') : '',
             mergedConfig.training_arguments?.profile_microbatch ? buildEnvVar('PROFILE_MICROBATCH', '1') : '',
@@ -1847,153 +1903,26 @@ app.post('/api/jobs/:name/reset-config', (req, res) => {
 
 // --- Hardware Monitor ---
 
-let prevCpuInfo = null;
-
-function getCpuUsagePct() {
-    const cpus = os.cpus();
-    if (!prevCpuInfo) {
-        prevCpuInfo = cpus;
-        return 0;
-    }
-    let totalDelta = 0, idleDelta = 0;
-    cpus.forEach((cpu, i) => {
-        const prev = prevCpuInfo[i];
-        if (!prev) return;
-        const prevTotal = Object.values(prev.times).reduce((a, b) => a + b, 0);
-        const currTotal = Object.values(cpu.times).reduce((a, b) => a + b, 0);
-        totalDelta += currTotal - prevTotal;
-        idleDelta += cpu.times.idle - prev.times.idle;
-    });
-    prevCpuInfo = cpus;
-    if (totalDelta === 0) return 0;
-    return Math.round((1 - idleDelta / totalDelta) * 100);
-}
-
-function getCpuTemp() {
-    return new Promise((resolve) => {
-        if (isWindows) {
-            // Query WMI thermal zone (returns tenths of Kelvin)
-            const proc = spawn('powershell', [
-                '-NoProfile', '-NonInteractive', '-Command',
-                'Get-WmiObject -Namespace root/wmi -Class MSAcpi_ThermalZoneTemperature | Select-Object -ExpandProperty CurrentTemperature'
-            ]);
-            let out = '';
-            proc.stdout.on('data', d => out += d);
-            proc.on('close', (code) => {
-                if (code !== 0 || !out.trim()) return resolve(null);
-                try {
-                    // Average across all zones, convert tenths-of-Kelvin → Celsius
-                    const vals = out.trim().split('\n')
-                        .map(l => parseFloat(l.trim()))
-                        .filter(v => !isNaN(v) && v > 0);
-                    if (!vals.length) return resolve(null);
-                    const avgCelsius = Math.round(vals.reduce((a, b) => a + b, 0) / vals.length / 10 - 273.15);
-                    resolve(avgCelsius);
-                } catch (e) { resolve(null); }
-            });
-            proc.on('error', () => resolve(null));
-        } else {
-            // Linux: read from /sys/class/thermal
-            const proc = spawn('bash', ['-c',
-                'paste -sd+ /sys/class/thermal/thermal_zone*/temp 2>/dev/null | bc'
-            ]);
-            let out = '';
-            proc.stdout.on('data', d => out += d);
-            proc.on('close', () => {
-                const val = parseFloat(out.trim());
-                resolve(isNaN(val) ? null : Math.round(val / 1000));
-            });
-            proc.on('error', () => resolve(null));
-        }
-    });
-}
-
-let gpuStatsPending = false;
-
-function getGpuStats() {
-    if (gpuStatsPending) return Promise.resolve(null);
-    gpuStatsPending = true;
-    return new Promise((resolve) => {
-        const smi = spawn('nvidia-smi', [
-            '--query-gpu=index,name,utilization.gpu,memory.used,memory.total,temperature.gpu,power.draw,power.limit',
-            '--format=csv,noheader,nounits'
-        ]);
-        const timer = setTimeout(() => { smi.kill(); gpuStatsPending = false; resolve(null); }, 3000);
-        let stdout = '';
-        smi.stdout.on('data', d => stdout += d);
-        smi.on('close', (code) => {
-            clearTimeout(timer);
-            gpuStatsPending = false;
-            if (code !== 0 || !stdout.trim()) return resolve(null);
-            try {
-                const gpus = stdout.trim().split('\n').map(line => {
-                    const parts = line.split(',').map(s => s.trim());
-                    return {
-                        index: parseInt(parts[0]),
-                        name: parts[1],
-                        util: parseInt(parts[2]) || 0,
-                        memUsed: parseInt(parts[3]) || 0,
-                        memTotal: parseInt(parts[4]) || 0,
-                        temp: parseInt(parts[5]) || 0,
-                        powerDraw: Math.round(parseFloat(parts[6])) || 0,
-                        powerLimit: Math.round(parseFloat(parts[7])) || 0
-                    };
-                });
-                resolve(gpus);
-            } catch (e) {
-                resolve(null);
-            }
-        });
-        smi.on('error', () => { clearTimeout(timer); gpuStatsPending = false; resolve(null); });
-    });
-}
-
-setInterval(async () => {
-    if (wss.clients.size === 0) return;
-
-    const cpuPct = getCpuUsagePct();
-    const totalMem = os.totalmem();
-    const freeMem = os.freemem();
-    const [gpus, cpuTemp] = await Promise.all([getGpuStats(), getCpuTemp()]);
-
-    if (gpus === null) return; // nvidia-smi busy or timed out — skip this tick
-
-    // Mark active GPUs from running jobs
-    const activeGpus = {};
+function getActiveGpus() {
+    const active = {};
     for (const [, job] of runningJobs.entries()) {
         if (job.gpuIds) {
             job.gpuIds.split(',').forEach(id => {
                 const trimmed = id.trim();
-                if (trimmed) activeGpus[trimmed] = job.type === 'generation' ? 'sampling' : 'training';
+                if (trimmed) active[trimmed] = job.type === 'generation' ? 'sampling' : 'training';
             });
         }
     }
     if (persistentGenProcess && persistentGenProcess.gpuIds) {
         persistentGenProcess.gpuIds.split(',').forEach(id => {
             const trimmed = id.trim();
-            if (trimmed) activeGpus[trimmed] = 'sampling';
+            if (trimmed) active[trimmed] = 'sampling';
         });
     }
-    gpus.forEach(gpu => {
-        gpu.activity = activeGpus[String(gpu.index)] || null;
-    });
+    return active;
+}
 
-    const payload = JSON.stringify({
-        type: 'hw_stats',
-        data: {
-            cpu: cpuPct,
-            cpuTemp,
-            ram: { total: totalMem, used: totalMem - freeMem },
-            gpus
-        }
-    });
-
-    wss.clients.forEach(client => {
-        if (client.readyState === WebSocket.OPEN) {
-            client.send(payload);
-        }
-    });
-}, 1000);
+require('./lib/hardware').startHardwareMonitor(wss, getActiveGpus);
 
 // Prevent server crash on unhandled errors
 process.on('uncaughtException', (err) => {
@@ -2029,16 +1958,16 @@ async function findAvailablePort(startPort, maxAttempts = 10) {
     const port = await findAvailablePort(DEFAULT_PORT);
 
     if (!port) {
-        console.error(`\n❌ ERROR: No available port found in range ${DEFAULT_PORT}-${DEFAULT_PORT + 10}`);
+        console.error(`\nERROR: No available port found in range ${DEFAULT_PORT}-${DEFAULT_PORT + 10}`);
         process.exit(1);
     }
 
     if (port !== DEFAULT_PORT) {
-        console.warn(`⚠️ Port ${DEFAULT_PORT} was busy, using ${port} instead.`);
+        console.warn(`Port ${DEFAULT_PORT} was busy, using ${port} instead.`);
     }
 
     server.listen(port, () => {
-        console.log(`🎯 Anima Training UI running at http://localhost:${port}`);
+        console.log(`Anima Training UI running at http://localhost:${port}`);
         try {
             openNative(`http://localhost:${port}`, true);
         } catch (e) {
@@ -2046,4 +1975,5 @@ async function findAvailablePort(startPort, maxAttempts = 10) {
         }
     });
 })();
+
 

@@ -780,9 +780,13 @@ class BaseDataset(torch.utils.data.Dataset):
 
     def set_current_epoch(self, epoch):
         if not self.current_epoch == epoch:  # epochが切り替わったらバケツをシャッフルする
+            is_main_process = int(os.environ.get("RANK", "0")) == 0
+            is_dataloader_worker = torch.utils.data.get_worker_info() is not None
+            should_log = is_main_process and not is_dataloader_worker
             if epoch > self.current_epoch:
-                #Only log on main process to prevent duplicate logs from multi-worker data loaders
-                if int(os.environ.get("RANK", "0")) == 0:
+                # Only log on the real main process; forked DataLoader workers
+                # inherit RANK=0 on Linux/WSL and would otherwise duplicate this.
+                if should_log:
                     logger.info("epoch is incremented. current_epoch: {}, epoch: {}".format(self.current_epoch, epoch))
                 
                 num_epochs = epoch - self.current_epoch
@@ -790,7 +794,7 @@ class BaseDataset(torch.utils.data.Dataset):
                     self.current_epoch += 1
                     self.shuffle_buckets()
             else:
-                if int(os.environ.get("RANK", "0")) == 0:
+                if should_log:
                     logger.warning("epoch is not incremented. current_epoch: {}, epoch: {}".format(self.current_epoch, epoch))
                 self.current_epoch = epoch
 

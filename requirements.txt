@@ -53,6 +53,7 @@ sentencepiece==0.2.1
 flask
 wandb
 ./cuda_direct_pkg
+./wd_parallel_pkg
 
 -e .
 setuptools==80.0.0

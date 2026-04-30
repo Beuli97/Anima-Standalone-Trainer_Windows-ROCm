@@ -144,6 +144,24 @@ class NetworkTrainer:
     def __init__(self):
         self.vae_scale_factor = 0.18215
         self.is_sdxl = False
+        self._optimizer_device_fix_warned = False
+
+    @staticmethod
+    def _ensure_optimizer_param_devices_match_grads(optimizer) -> int:
+        """Move swapped/offloaded params back to their grad device before optimizer.step()."""
+        moved = 0
+        for group in optimizer.param_groups:
+            for p in group["params"]:
+                if p is None or p.grad is None:
+                    continue
+                grad_device = p.grad.device
+                if p.device != grad_device:
+                    p.data = p.data.to(device=grad_device, non_blocking=True)
+                    for key, state_value in optimizer.state.get(p, {}).items():
+                        if torch.is_tensor(state_value) and state_value.device != grad_device:
+                            optimizer.state[p][key] = state_value.to(device=grad_device, non_blocking=True)
+                    moved += 1
+        return moved
 
     # TODO 他のスクリプトと共通化する
     def generate_step_logs(
@@ -472,6 +490,11 @@ class NetworkTrainer:
     ) -> torch.nn.Module:
         return accelerator.prepare(unet)
 
+    def pre_step_calculation_setup(self, args, accelerator, train_dataloader):
+        """Called right before max_train_steps is computed from max_train_epochs.
+        Override to adjust accelerator.num_processes if needed (e.g. TP sets it to 1)."""
+        pass
+
     def on_step_start(self, args, accelerator, network, text_encoders, unet, batch, weight_dtype, is_train: bool = True):
         pass
 
@@ -724,6 +747,9 @@ class NetworkTrainer:
         logger.info("preparing accelerator")
         accelerator = train_util.prepare_accelerator(args)
         is_main_process = accelerator.is_main_process
+        tp_collective_save = int(getattr(args, "tp_degree", 1) or 1) > 1
+        tp_rank = int(os.environ.get("RANK", os.environ.get("LOCAL_RANK", 0))) if tp_collective_save else 0
+        is_tp_writer = (not tp_collective_save) or tp_rank == 0
 
         # mixed precisionに対応した型を用意しておき適宜castする
         weight_dtype, save_dtype = train_util.prepare_dtype(args)
@@ -951,6 +977,7 @@ class NetworkTrainer:
             )
 
         # 学習ステップ数を計算する
+        self.pre_step_calculation_setup(args, accelerator, train_dataloader)
         if args.max_train_epochs is not None:
             args.max_train_steps = args.max_train_epochs * math.ceil(
                 len(train_dataloader) / accelerator.num_processes / args.gradient_accumulation_steps
@@ -1518,6 +1545,8 @@ class NetworkTrainer:
                 huggingface_util.upload(args, ckpt_file, "/" + ckpt_name, force_sync_upload=force_sync_upload)
 
         def remove_model(old_ckpt_name):
+            if not is_tp_writer:
+                return
             old_ckpt_file = os.path.join(args.output_dir, old_ckpt_name)
             if os.path.exists(old_ckpt_file):
                 accelerator.print(f"removing old checkpoint: {old_ckpt_file}")
@@ -1752,6 +1781,19 @@ class NetworkTrainer:
                             network.update_grad_norms()
                         if hasattr(network, "update_norms"):
                             network.update_norms()
+
+                    if (
+                        args.blocks_to_swap
+                        or getattr(args, "cpu_offload_checkpointing", False)
+                        or getattr(args, "unsloth_offload_checkpointing", False)
+                    ):
+                        moved_params = self._ensure_optimizer_param_devices_match_grads(optimizer)
+                        if moved_params > 0 and not self._optimizer_device_fix_warned:
+                            logger.warning(
+                                f"Moved {moved_params} trainable parameters back to their grad device before optimizer.step() "
+                                f"to support block swap / offload with the current optimizer."
+                            )
+                            self._optimizer_device_fix_warned = True
                     optimizer.step()
                     lr_scheduler.step()
                     optimizer.zero_grad(set_to_none=True)
@@ -1796,7 +1838,7 @@ class NetworkTrainer:
                     # 指定ステップごとにモデルを保存
                     if args.save_every_n_steps is not None and global_step % args.save_every_n_steps == 0:
                         accelerator.wait_for_everyone()
-                        if accelerator.is_main_process:
+                        if accelerator.is_main_process or tp_collective_save:
                             ckpt_name = train_util.get_step_ckpt_name(args, "." + args.save_model_as, global_step)
                             save_model(ckpt_name, accelerator.unwrap_model(network), global_step, epoch)
 
@@ -1990,7 +2032,7 @@ class NetworkTrainer:
             optimizer_eval_fn()
             if args.save_every_n_epochs is not None:
                 saving = (epoch + 1) % args.save_every_n_epochs == 0 and (epoch + 1) < num_train_epochs
-                if is_main_process and saving:
+                if (is_main_process or tp_collective_save) and saving:
                     ckpt_name = train_util.get_epoch_ckpt_name(args, "." + args.save_model_as, epoch + 1)
                     save_model(ckpt_name, accelerator.unwrap_model(network), global_step, epoch + 1)
 
@@ -2017,10 +2059,10 @@ class NetworkTrainer:
         accelerator.end_training()
         optimizer_eval_fn()
 
-        if is_main_process and (args.save_state or args.save_state_on_train_end):
+        if (is_main_process or tp_collective_save) and (args.save_state or args.save_state_on_train_end):
             train_util.save_state_on_train_end(args, accelerator)
 
-        if is_main_process:
+        if is_main_process or tp_collective_save:
             ckpt_name = train_util.get_last_ckpt_name(args, "." + args.save_model_as)
             save_model(ckpt_name, network, global_step, num_train_epochs, force_sync_upload=True)
 

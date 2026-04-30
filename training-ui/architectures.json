@@ -6,6 +6,7 @@
       "scripts": {
         "train": "anima_train.py",
         "train_network": "anima_train_network.py",
+        "train_tp_sp": "anima_train_tensor_sequence_parallel.py",
         "train_network_tp_sp": "anima_train_network_tensor_sequence_parallel.py",
         "generate": "anima_gen.py"
       },

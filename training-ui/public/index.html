@@ -408,42 +408,66 @@
 
                     <!-- Network Tab -->
                     <div id="tab-network" class="tab-pane hidden">
-                        <h4>LoRA Configuration</h4>
                         <div class="form-group">
-                            <label>Network Module</label>
-                            <select id="cfg-network-module">
-                                <option value="networks.lora_anima">LoRA (Anima)</option>
-                                <option value="networks.lora_lumina">LoRA (Lumina)</option>
-                                <option value="networks.lora">LoRA (Standard)</option>
+                            <label>Training Type</label>
+                            <select id="cfg-training-type">
+                                <option value="lora">LoRA</option>
+                                <option value="full_finetune">Full Finetune</option>
                             </select>
+                            <small>LoRA trains lightweight adapter weights. Full Finetune trains the entire DiT model.</small>
                         </div>
-                        <div class="form-row">
+
+                        <div id="lora-config-section">
+                            <h4>LoRA Configuration</h4>
                             <div class="form-group">
-                                <label>Network Dim (Rank)</label>
-                                <input type="number" id="cfg-network-dim" value="16" min="1">
-                                <small>Higher = more capacity, more VRAM.</small>
+                                <label>Network Module</label>
+                                <select id="cfg-network-module">
+                                    <option value="networks.lora_anima">LoRA (Anima)</option>
+                                    <option value="networks.lora_lumina">LoRA (Lumina)</option>
+                                    <option value="networks.lora">LoRA (Standard)</option>
+                                </select>
+                            </div>
+                            <div class="form-row">
+                                <div class="form-group">
+                                    <label>Network Dim (Rank)</label>
+                                    <input type="number" id="cfg-network-dim" value="16" min="1">
+                                    <small>Higher = more capacity, more VRAM.</small>
+                                </div>
+                                <div class="form-group">
+                                    <label>Network Alpha</label>
+                                    <input type="number" id="cfg-network-alpha" value="16" min="1">
+                                    <small>Scaling factor. Usually same as dim.</small>
+                                </div>
                             </div>
                             <div class="form-group">
-                                <label>Network Alpha</label>
-                                <input type="number" id="cfg-network-alpha" value="16" min="1">
-                                <small>Scaling factor. Usually same as dim.</small>
+                                <label><input type="checkbox" id="cfg-unet-only" checked> Train UNet Only</label>
+                                <small>Freeze text encoder. Recommended for most LoRA training.</small>
                             </div>
-                        </div>
-                        <div class="form-group">
-                            <label><input type="checkbox" id="cfg-unet-only" checked> Train UNet Only</label>
-                            <small>Freeze text encoder. Recommended for most LoRA training.</small>
-                        </div>
-                        <div class="form-row">
+                            <div class="form-row">
+                                <div class="form-group">
+                                    <label>Network Dropout</label>
+                                    <input type="number" id="cfg-network-dropout" value="0" step="0.05" min="0" max="1">
+                                    <small>Dropout rate (0-1). Randomly zeroes LoRA neurons to reduce overfitting. 0 = off.</small>
+                                </div>
+                            </div>
                             <div class="form-group">
-                                <label>Network Dropout</label>
-                                <input type="number" id="cfg-network-dropout" value="0" step="0.05" min="0" max="1">
-                                <small>Dropout rate (0-1). Randomly zeroes LoRA neurons to reduce overfitting. 0 = off.</small>
+                                <label>Network Args</label>
+                                <input type="text" id="cfg-network-args" placeholder="e.g. conv_dim=4 conv_alpha=4">
+                                <small>Space-separated key=value pairs passed to the network module.</small>
+                            </div>
+                            <div class="form-group">
+                                <label>Network Weights (LoRA checkpoint)</label>
+                                <input type="text" id="cfg-network-weights" placeholder="C:\path\to\lora.safetensors">
+                                <small>Initialize from an existing LoRA. Often used for fine-tuning the lora. Usually not needed.</small>
                             </div>
                         </div>
-                        <div class="form-group">
-                            <label>Network Args</label>
-                            <input type="text" id="cfg-network-args" placeholder="e.g. conv_dim=4 conv_alpha=4">
-                            <small>Space-separated key=value pairs passed to the network module.</small>
+
+                        <div id="fft-config-section" class="hidden">
+                            <h4>Full Finetune Options</h4>
+                            <div class="form-group">
+                                <label><input type="checkbox" id="cfg-freeze-llm-adapter" checked> Freeze LLM Adapter</label>
+                                <small>Keep the LLM adapter weights frozen during training. Recommended — the adapter is pre-trained and retraining it risks degrading text understanding and causes DDP graph errors.</small>
+                            </div>
                         </div>
 
                         <h4>Resume Training</h4>
@@ -455,12 +479,6 @@
                             <label>Resume State Folder</label>
                             <input type="text" id="cfg-resume" placeholder="C:\path\to\saved_state">
                             <small>Resume training state (optimizer, scheduler, step count). Leave blank when auto-resume is enabled.</small>
-                        </div>
-                        <div class="form-group">
-                            <label>Network Weights (LoRA checkpoint)</label>
-                            <input type="text" id="cfg-network-weights" placeholder="C:\path\to\lora.safetensors">
-                            <small>Initialize from an existing LoRA. Often used for fine-tuning the lora. Usually not
-                                needed.</small>
                         </div>
                     </div>
 
@@ -623,7 +641,8 @@
                                 <option value="ddp">DDP — Data Parallel (standard)</option>
                                 <option value="fsdp">FSDP1 — Fully Sharded Data Parallel v1</option>
                                 <option value="fsdp2">FSDP2 — Fully Sharded Data Parallel v2 (Linux only)</option>
-                                <option value="tp_sp" style="display:none">TP/SP — Tensor + Sequence Parallel</option>
+                                <option value="deepspeed">DeepSpeed — ZeRO Optimizer Sharding</option>
+                                <option value="tp_sp">TP/SP — Tensor + Sequence Parallel</option>
                             </select>
                             <small>DDP replicates the full model on each GPU and syncs gradients. FSDP1/FSDP2 shard parameters to reduce VRAM (FSDP2 is the newer, simpler API).</small>
                         </div>
@@ -787,6 +806,58 @@
                             </div>
                         </div>
 
+                        <!-- DeepSpeed Settings — shown when Parallelism Mode = DeepSpeed -->
+                        <div id="group-deepspeed" class="form-group hidden" style="margin-top: 20px;">
+                            <label style="font-weight: 600;">DeepSpeed Options</label>
+                            <div style="margin-top: 12px;">
+                                <label>ZeRO Stage</label>
+                                <select id="cfg-ds-zero-stage">
+                                    <option value="0">Stage 0 (No ZeRO)</option>
+                                    <option value="1">Stage 1 (Optimizer State Sharding)</option>
+                                    <option value="2" selected>Stage 2 (Optimizer + Gradient Sharding)</option>
+                                    <option value="3">Stage 3 (Full Parameter + Optimizer + Gradient Sharding)</option>
+                                </select>
+                                <small>Higher stage saves more VRAM but can increase communication overhead.</small>
+                            </div>
+                            <div style="margin-top: 12px;">
+                                <label>Optimizer Offload Device</label>
+                                <select id="cfg-ds-offload-optimizer-device">
+                                    <option value="none">None</option>
+                                    <option value="cpu">CPU</option>
+                                    <option value="nvme">NVMe</option>
+                                </select>
+                            </div>
+                            <div id="ds-offload-opt-nvme-group" style="margin-top: 10px;" class="hidden">
+                                <label>Optimizer NVMe Path</label>
+                                <input type="text" id="cfg-ds-offload-optimizer-nvme-path" placeholder="/local_nvme">
+                            </div>
+                            <div style="margin-top: 12px;">
+                                <label>Parameter Offload Device</label>
+                                <select id="cfg-ds-offload-param-device">
+                                    <option value="none">None</option>
+                                    <option value="cpu">CPU</option>
+                                    <option value="nvme">NVMe</option>
+                                </select>
+                            </div>
+                            <div id="ds-offload-param-nvme-group" style="margin-top: 10px;" class="hidden">
+                                <label>Parameter NVMe Path</label>
+                                <input type="text" id="cfg-ds-offload-param-nvme-path" placeholder="/local_nvme">
+                            </div>
+                            <div style="margin-top: 12px;">
+                                <label><input type="checkbox" id="cfg-ds-zero3-init-flag"> Enable ZeRO-3 Init</label>
+                            </div>
+                            <div style="margin-top: 10px;">
+                                <label><input type="checkbox" id="cfg-ds-zero3-save-16bit-model"> Save 16-bit Model with ZeRO-3</label>
+                            </div>
+                            <div style="margin-top: 10px;">
+                                <label><input type="checkbox" id="cfg-ds-fp16-master-weights-and-gradients"> FP16 Master Weights and Gradients</label>
+                                <small>Primarily useful for ZeRO-Offload configurations that support this mode.</small>
+                            </div>
+                            <div style="margin-top: 12px; padding: 10px; background: var(--bg-secondary); border-radius: 4px; border-left: 3px solid var(--accent); font-size: 0.8rem; line-height: 1.5;">
+                                <strong>DeepSpeed note:</strong> This mode uses Accelerate DeepSpeed launch options plus existing training arguments.
+                            </div>
+                        </div>
+
                         <!-- TP/SP Settings — shown when Parallelism Mode = TP/SP -->
                         <div id="group-tp-sp" class="form-group hidden" style="margin-top: 20px;">
                             <label style="font-weight: 600;">TP/SP Options</label>
@@ -796,11 +867,26 @@
                                 <small>Number of GPUs for tensor parallelism. Must equal the number of selected GPUs above.</small>
                             </div>
                             <div style="margin-top: 12px;">
-                                <label title="Splits the token sequence across TP ranks in addition to weight sharding. Halves activation memory per GPU at the cost of two extra collectives per block."><input type="checkbox" id="cfg-sequence-parallel"> Enable Sequence Parallel (SP)</label>
-                                <small>Splits spatial tokens across GPUs alongside weight sharding. Reduces activation memory by ~half per GPU. Adds 2 all-gathers per DiT block.</small>
+                                <label>Backend</label>
+                                <select id="cfg-tp-backend">
+                                    <option value="auto">Auto</option>
+                                    <option value="gloo">Gloo (Windows)</option>
+                                    <option value="nccl">NCCL (WSL/Linux)</option>
+                                </select>
+                                <small>Use Gloo on native Windows. Use NCCL from WSL/Linux. Auto lets the TP/SP script choose.</small>
+                            </div>
+                            <div style="margin-top: 12px;">
+                                <label title="TP/SP mode always runs tensor parallel and sequence parallel together."><input type="checkbox" id="cfg-sequence-parallel" checked disabled> Sequence Parallel (SP)</label>
+                                <small>Always enabled for this mode. Spatial tokens are split across GPUs alongside weight sharding.</small>
+                            </div>
+                            <div style="margin-top: 12px;">
+                                <label><input type="checkbox" id="cfg-no-fuse-qkv"> Disable Fused QKV</label>
+                                <small>Debug option. Leaves attention q/k/v projections unfused instead of using the packed QKV/KV TP path.</small>
+                            </div>
+                            <div style="margin-top: 12px;">
                             </div>
                             <div style="margin-top: 12px; padding: 10px; background: var(--bg-secondary); border-radius: 4px; border-left: 3px solid var(--accent); font-size: 0.8rem; line-height: 1.5;">
-                                <strong>TP/SP notes:</strong> All standard training configs (LR, batch size, optimizer, network dim, etc.) work. Sample generation during training is disabled. CUDA Direct backend is auto-detected. Torch Compile is incompatible.
+                                <strong>TP/SP notes:</strong> All standard training configs (LR, batch size, optimizer, network dim, etc.) work. Sample generation during training is disabled. Backend is selected above. Torch Compile is incompatible.
                             </div>
                         </div>
 
