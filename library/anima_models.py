@@ -1048,7 +1048,11 @@ class Block(nn.Module):
         if extra_per_block_pos_emb is not None:
             x_B_T_H_W_D = x_B_T_H_W_D + extra_per_block_pos_emb
 
-        lora_addend = adaln_lora_B_T_3D if self.use_adaln_lora else None
+        if self.use_adaln_lora:
+            assert adaln_lora_B_T_3D is not None
+            lora_addend = adaln_lora_B_T_3D
+        else:
+            lora_addend = None
 
         shift_self_attn_B_T_D, scale_self_attn_B_T_D, gate_self_attn_B_T_D = _modulate_adaln(
             self.adaln_modulation_self_attn, emb_B_T_D, lora_addend, n_chunks=3, do_fp32=do_fp32
