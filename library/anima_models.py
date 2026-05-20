@@ -788,6 +788,16 @@ class PatchEmbed(nn.Module):
         return x
 
 
+# torch>=2.4 added a device_type arg to is_autocast_enabled; older builds (see
+# README's torch<=2.3 + cuda<=12.4 multi-GPU note) only accept zero-arg.
+try:
+    torch.is_autocast_enabled("cuda")
+    _is_autocast_enabled_for_device = torch.is_autocast_enabled
+except TypeError:
+    def _is_autocast_enabled_for_device(device_type):  # noqa: ARG001
+        return torch.is_autocast_enabled()
+
+
 def _run_adaln_modulation_fp32(modulation: nn.Sequential, x: torch.Tensor) -> torch.Tensor:
     """Run an AdaLN modulation through each submodule's forward, return fp32.
 
@@ -887,7 +897,7 @@ class FinalLayer(nn.Module):
     ):
         # fp32 modulation only when an outer autocast(fp16) is active to downcast
         # back; do_sample disables autocast and would crash without this gate.
-        do_fp32 = use_fp32 and torch.is_autocast_enabled(x_B_T_H_W_D.device.type)
+        do_fp32 = use_fp32 and _is_autocast_enabled_for_device(x_B_T_H_W_D.device.type)
 
         if self.use_adaln_lora:
             assert adaln_lora_B_T_3D is not None
@@ -1016,7 +1026,7 @@ class Block(nn.Module):
     ) -> torch.Tensor:
         # fp32 promotion only when an outer autocast(fp16) is active to downcast
         # back; do_sample disables autocast and would crash without this gate.
-        do_fp32 = use_fp32 and torch.is_autocast_enabled(x_B_T_H_W_D.device.type)
+        do_fp32 = use_fp32 and _is_autocast_enabled_for_device(x_B_T_H_W_D.device.type)
 
         if do_fp32:
             # Residual stays fp32 across sublayers; autocast downcasts inside each one.
