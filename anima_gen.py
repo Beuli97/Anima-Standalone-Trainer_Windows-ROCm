@@ -20,7 +20,7 @@ CURRENT_LORA = {"path": None, "mul": 1.0}
 def _apply_lora(accelerator, models, lora_path, multiplier):
     import networks.lora_anima
     net, sd = networks.lora_anima.create_network_from_weights(
-        multiplier=multiplier,
+        multiplier=multiplier, 
         file=lora_path,
         ae=models["vae"],
         text_encoders=[models["qwen3"]],
@@ -28,24 +28,13 @@ def _apply_lora(accelerator, models, lora_path, multiplier):
         for_inference=True
     )
     net.merge_to([models["qwen3"]], models["dit"], sd, models["dtype"], accelerator.device)
-    del net
-
-    # Sync secondary model for Parallel CFG.
+    
+    # Sync with secondary model if using Parallel CFG
     if models.get("dit_secondary") is not None:
         sec_device = next(models["dit_secondary"].parameters()).device
-        net_sec, _ = networks.lora_anima.create_network_from_weights(
-            multiplier=multiplier,
-            file=lora_path,
-            ae=models["vae"],
-            text_encoders=[],
-            unet=models["dit_secondary"],
-            for_inference=True,
-            weights_sd=sd,
-        )
-        net_sec.merge_to([], models["dit_secondary"], sd, models["dtype"], sec_device)
-        del net_sec
-
-    del sd
+        net.merge_to([], models["dit_secondary"], sd, models["dtype"], sec_device)
+        
+    del net, sd
     torch.cuda.empty_cache()
 
 def manage_lora(accelerator, models, target_path, target_mul):
@@ -359,7 +348,7 @@ def main():
 
     # Manual distributed initialization for Multi-GPU
     if "WORLD_SIZE" in os.environ and int(os.environ["WORLD_SIZE"]) > 1:
-        import torch.distributed as dist
+        from library.dist_compat import dist
         if not dist.is_initialized():
             os.environ["MASTER_ADDR"] = os.environ.get("MASTER_ADDR", "localhost")
             os.environ["MASTER_PORT"] = os.environ.get("MASTER_PORT", "29500")

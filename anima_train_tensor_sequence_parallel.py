@@ -23,7 +23,7 @@ import types
 from typing import Union
 
 import torch
-import torch.distributed as dist
+from library.dist_compat import dist
 
 from library.device_utils import init_ipex
 init_ipex()
@@ -465,7 +465,7 @@ def _gather_tp_weights_for_save(dit: torch.nn.Module, tp_groups) -> list:
     so callers can restore the original sharded ColumnParallel/RowParallel modules
     after saving (the modules are kept alive via these references).
     """
-    import torch.distributed as dist
+    from library.dist_compat import dist
     from wd_parallel.layers import ColumnParallelLinear, RowParallelLinear
 
     restore_info = []
@@ -812,14 +812,17 @@ def setup_parser() -> argparse.ArgumentParser:
 if __name__ == "__main__":
     # Required for async TP collective overlap: CUDA scheduler must honour
     # kernel-submission order so async AG/RS runs before the dependent matmul.
+    # (NVIDIA only — ROCm/HIP ignores this env var, so skip the warning.)
+    _is_nvidia = torch.cuda.is_available() and "amd" not in torch.cuda.get_device_name(0).lower()
     _cuda_max_conn = os.environ.get("CUDA_DEVICE_MAX_CONNECTIONS")
-    if _cuda_max_conn is None:
-        os.environ["CUDA_DEVICE_MAX_CONNECTIONS"] = "1"
-    elif _cuda_max_conn != "1":
-        logger.warning(
-            f"CUDA_DEVICE_MAX_CONNECTIONS={_cuda_max_conn!r} (expected '1'). "
-            "Async TP collective overlap may not work correctly."
-        )
+    if _is_nvidia:
+        if _cuda_max_conn is None:
+            os.environ["CUDA_DEVICE_MAX_CONNECTIONS"] = "1"
+        elif _cuda_max_conn != "1":
+            logger.warning(
+                f"CUDA_DEVICE_MAX_CONNECTIONS={_cuda_max_conn!r} (expected '1'). "
+                "Async TP collective overlap may not work correctly."
+            )
 
     parser = setup_parser()
     args = parser.parse_args()

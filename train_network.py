@@ -17,7 +17,7 @@ from tqdm import tqdm
 
 import torch
 import torch.nn as nn
-import torch.distributed as dist
+from library.dist_compat import dist
 from torch.types import Number
 from library.device_utils import init_ipex, clean_memory_on_device
 
@@ -2056,7 +2056,13 @@ class NetworkTrainer:
         if is_main_process:
             network = accelerator.unwrap_model(network)
 
-        accelerator.end_training()
+        try:
+            accelerator.end_training()
+        except (AttributeError, RuntimeError) as e:
+            # On Windows + ROCm, torch.distributed may be incomplete
+            # (e.g. missing is_initialized). end_training() is just cleanup —
+            # the model has already been saved at this point.
+            logger.warning(f"Ignoring end_training() error (likely ROCm/Windows): {e}")
         optimizer_eval_fn()
 
         if (is_main_process or tp_collective_save) and (args.save_state or args.save_state_on_train_end):

@@ -1,7 +1,7 @@
 from tqdm import tqdm
 import time
 import torch
-import torch.distributed as dist
+from library.dist_compat import dist
 
 class StepProfiler:
     def __init__(self, accelerator, enabled=False, profile_microbatch=False):

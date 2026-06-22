@@ -9,7 +9,7 @@ import numpy as np
 import PIL.Image
 import torch
 from packaging import version
-from transformers import CLIPImageProcessor as CLIPFeatureExtractor, CLIPTextModel, CLIPTokenizer, CLIPVisionModelWithProjection
+from transformers import CLIPFeatureExtractor, CLIPTextModel, CLIPTokenizer, CLIPVisionModelWithProjection
 
 import diffusers
 from diffusers import SchedulerMixin, StableDiffusionPipeline
@@ -61,7 +61,7 @@ re_attention = re.compile(
 
 
 def parse_prompt_attention(text):
-    """
+    r"""
     Parses a string with attention tokens and returns a list of pairs: text and its associated weight.
     Accepted tokens are:
       (abc) - increases attention to abc by a multiplier of 1.1

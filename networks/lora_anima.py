@@ -415,7 +415,7 @@ class RowParallelLoRAModule(LoRAModule):
         if self._use_sp:
             from wd_parallel import reduce_scatter_to_sp_region
             return reduce_scatter_to_sp_region(x, self._tp_group, self._seq_dim)
-        import torch.distributed as dist
+        from library.dist_compat import dist
         x = x.contiguous()
         dist.all_reduce(x, group=self._tp_group)
         return x
@@ -1155,7 +1155,7 @@ class LoRANetwork(torch.nn.Module):
         original unpadded base-module shape for standard LoRA checkpoint saving.
         scatter_tp_lora_weights() accepts either trimmed or padded full weights.
         """
-        import torch.distributed as dist
+        from library.dist_compat import dist
 
         for lora in self.text_encoder_loras + self.unet_loras:
             if isinstance(lora, PackedColumnParallelLoRAModule) and lora._tp_group is not None:
@@ -1206,7 +1206,7 @@ class LoRANetwork(torch.nn.Module):
         Column-parallel LoRA: lora_up.weight (D_out, lora_dim) → slice dim 0 → (D_out/tp, lora_dim)
         Row-parallel LoRA:    lora_down.weight (lora_dim, D_in) → slice dim 1 → (lora_dim, D_in/tp)
         """
-        import torch.distributed as dist
+        from library.dist_compat import dist
 
         for lora in self.text_encoder_loras + self.unet_loras:
             if isinstance(lora, PackedColumnParallelLoRAModule) and lora._tp_group is not None:

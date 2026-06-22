@@ -1,4 +1,4 @@
-const express = require('express');
+﻿const express = require('express');
 const { spawn, execFileSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
@@ -160,74 +160,69 @@ app.get('/api/gpu/activity', (req, res) => {
     res.json(activity);
 });
 
-// Get GPU Information using nvidia-smi with Python fallback
-async function getDetectedGPUs() {
+// Run a command and capture stdout as a string.
+// Resolves to { stdout, code } on success or failure (never rejects).
+// Catches ENOENT (binary not found) cleanly.
+function runCommand(cmd, args, timeoutMs = 5000) {
     return new Promise((resolve) => {
-        // 1. Try nvidia-smi
-        const smi = spawn('nvidia-smi', ['--query-gpu=index,name,memory.total', '--format=csv,noheader']);
+        let child;
+        try {
+            child = spawn(cmd, args, { windowsHide: true });
+        } catch (e) {
+            return resolve({ stdout: '', code: null });
+        }
+
         let stdout = '';
-        let stderr = '';
+        let settled = false;
+        let timedOut = false;
 
-        smi.stdout.on('data', (data) => stdout += data);
-        smi.stderr.on('data', (data) => stderr += data);
+        const finish = (code) => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timer);
+            resolve({ stdout, code: timedOut ? null : code });
+        };
 
-        smi.on('close', (code) => {
-            if (code === 0 && stdout) {
-                const gpus = stdout.trim().split('\n').map(line => {
-                    const parts = line.split(',').map(s => s.trim());
-                    if (parts.length < 3) return null;
-                    return {
-                        index: parseInt(parts[0]),
-                        name: parts[1],
-                        memory: parts[2]
-                    };
-                }).filter(g => g !== null);
-                return resolve(gpus);
-            }
+        const timer = setTimeout(() => {
+            timedOut = true;
+            try { child.kill(); } catch (_) { }
+            setTimeout(() => {
+                try { child.kill('SIGKILL'); } catch (_) { }
+            }, 1000);
+        }, timeoutMs);
 
-            // 2. Fallback to Python (torch)
-            console.warn("nvidia-smi failed, trying python fallback...");
-            const globalConfig = getGlobalConfig();
-            const venvPath = toNativePath(globalConfig.venv_path || path.join(ROOT_DIR, 'venv'));
-            let pythonPath = 'python'; // Default
-            if (process.platform === 'win32') {
-                pythonPath = path.join(venvPath, 'Scripts', 'python.exe');
-            } else {
-                pythonPath = path.join(venvPath, 'bin', 'python');
-            }
-
-            if (!fs.existsSync(pythonPath)) {
-                pythonPath = 'python';
-            }
-
-            const pyScript = "import torch; import json; print(json.dumps([{'index': i, 'name': torch.cuda.get_device_name(i), 'memory': f'{torch.cuda.get_device_properties(i).total_memory // 1024**2} MiB'} for i in range(torch.cuda.device_count())]))";
-
-            const pyProc = spawn(pythonPath, ['-c', pyScript]);
-            let pyOut = '';
-            let pyErr = '';
-
-            pyProc.stdout.on('data', (data) => pyOut += data);
-            pyProc.stderr.on('data', (data) => pyErr += data);
-
-            pyProc.on('close', (pyCode) => {
-                if (pyCode !== 0) {
-                    console.error("Python GPU detection failed:", pyErr);
-                    return resolve([]);
-                }
-                try {
-                    const gpus = JSON.parse(pyOut.trim());
-                    resolve(gpus);
-                } catch (e) {
-                    console.error("Failed to parse Python GPU output:", e);
-                    resolve([]);
-                }
-            });
-        });
-
-        smi.on('error', (err) => {
-            // Silently fail to fallback
-        });
+        child.stdout.on('data', (d) => stdout += d);
+        // Swallow stderr to avoid polluting the console
+        child.stderr.on('data', () => { });
+        child.on('close', finish);
+        // 'error' fires for ENOENT etc. â€” must handle or Node throws uncaught
+        child.on('error', () => finish(null));
     });
+}
+
+// Get GPU Information via Python/torch (Windows + ROCm only)
+async function getDetectedGPUs() {
+    const globalConfig = getGlobalConfig();
+    const venvPath = toNativePath(globalConfig.venv_path || path.join(ROOT_DIR, 'venv'));
+    const pythonPath = fs.existsSync(path.join(venvPath, 'Scripts', 'python.exe'))
+        ? path.join(venvPath, 'Scripts', 'python.exe')
+        : 'python';
+
+    const pyScript = "import torch; import json; print(json.dumps([{'index': i, 'name': torch.cuda.get_device_name(i), 'memory': f'{torch.cuda.get_device_properties(i).total_memory // 1024**2} MiB'} for i in range(torch.cuda.device_count())]))";
+
+    const result = await runCommand(pythonPath, ['-c', pyScript], 10000);
+
+    if (result.code !== 0) {
+        console.error('Python GPU detection failed (exit code %s).', result.code);
+        return [];
+    }
+
+    try {
+        return JSON.parse(result.stdout.trim());
+    } catch (e) {
+        console.error('Failed to parse Python GPU output:', e.message);
+        return [];
+    }
 }
 
 function getDefaultConfig() {
@@ -415,7 +410,7 @@ function buildTrainingConfig(jobName, jobPath) {
     delete merged.training_arguments.sample_every_n_epochs;
     delete merged.training_arguments.sample_every_n_steps;
 
-    // Convert freeze_llm_adapter flag → llm_adapter_lr: 0 (works for both DDP and TP+SP FFT)
+    // Convert freeze_llm_adapter flag â†’ llm_adapter_lr: 0 (works for both DDP and TP+SP FFT)
     if (merged.training_arguments.freeze_llm_adapter) {
         merged.training_arguments.llm_adapter_lr = 0;
     }
@@ -952,7 +947,7 @@ function buildEnvVar(name, value) {
 function buildLaunchConfig(gpuIds, mergedConfig, mergedConfigPath, jobArch) {
     const ta = mergedConfig.training_arguments || {};
     const mixedPrec = ta.mixed_precision || 'bf16';
-    const mode = ta.multigpu_mode || (ta.deepspeed ? 'deepspeed' : (ta.use_fsdp ? 'fsdp' : 'ddp'));
+    const mode = ta.multigpu_mode || 'ddp';
 
     let gpuEnv = '';
     let accelerateFlags = '';
@@ -986,66 +981,6 @@ function buildLaunchConfig(gpuIds, mergedConfig, mergedConfigPath, jobArch) {
                 const tpBackend = allowedBackends.includes(rawBackend) ? rawBackend : (isWindows ? 'gloo' : 'nccl');
                 tpTrainCmd = `python -m torch.distributed.run --nproc_per_node=${n} --master_addr 127.0.0.1 --master_port 29500 "${target}" --tp_degree ${n} --tp_backend ${tpBackend} --sequence_parallel --config_file="${mergedConfigPath}"`;
 
-            } else if (mode === 'fsdp2') {
-                const reshard = ta.fsdp2_reshard_after_forward ?? true;
-                accelerateFlags = `--use_fsdp --fsdp_version 2 --num_processes ${validIds.length} --mixed_precision ${mixedPrec}`;
-                accelerateFlags += ` --fsdp_reshard_after_forward ${reshard ? 'true' : 'false'}`;
-                if (ta.fsdp2_cpu_ram_efficient_loading)  accelerateFlags += ` --fsdp_sync_module_states true --fsdp_cpu_ram_efficient_loading true`;
-                if (ta.fsdp2_offload_params)             accelerateFlags += ` --fsdp_offload_params true`;
-                if (ta.fsdp2_activation_checkpointing)   accelerateFlags += ` --fsdp_activation_checkpointing true`;
-                if (ta.fsdp2_auto_wrap_policy && ta.fsdp2_auto_wrap_policy !== 'NO_WRAP') {
-                    accelerateFlags += ` --fsdp_auto_wrap_policy ${ta.fsdp2_auto_wrap_policy}`;
-                    if (ta.fsdp2_auto_wrap_policy === 'SIZE_BASED_WRAP' && ta.fsdp2_min_num_params)
-                        accelerateFlags += ` --fsdp_min_num_params ${ta.fsdp2_min_num_params}`;
-                    if (ta.fsdp2_auto_wrap_policy === 'TRANSFORMER_BASED_WRAP') {
-                        const cls = (ta.fsdp2_transformer_layer_cls_to_wrap || '').trim() || (jobArch.fsdp_transformer_cls || '');
-                        if (cls) accelerateFlags += ` --fsdp_transformer_layer_cls_to_wrap "${cls}"`;
-                    }
-                }
-
-            } else if (mode === 'fsdp') {
-                accelerateFlags = `--use_fsdp --fsdp_version 1 --num_processes ${validIds.length} --mixed_precision ${mixedPrec}`;
-                accelerateFlags += ` --fsdp_sharding_strategy ${ta.fsdp_sharding_strategy || 1}`;
-                // sync_module_states must accompany cpu_ram_efficient_loading
-                if (ta.fsdp_cpu_ram_efficient_loading)   accelerateFlags += ` --fsdp_sync_module_states true --fsdp_cpu_ram_efficient_loading true`;
-                if (ta.fsdp_offload_params)              accelerateFlags += ` --fsdp_offload_params true`;
-                if (ta.fsdp_reshard_after_forward)       accelerateFlags += ` --fsdp_reshard_after_forward true`;
-                if (ta.fsdp_activation_checkpointing)    accelerateFlags += ` --fsdp_activation_checkpointing true`;
-                if (ta.fsdp_backward_prefetch)           accelerateFlags += ` --fsdp_backward_prefetch ${ta.fsdp_backward_prefetch}`;
-                if (ta.fsdp_forward_prefetch)            accelerateFlags += ` --fsdp_forward_prefetch true`;
-                if (ta.fsdp_use_orig_params === false)   accelerateFlags += ` --fsdp_use_orig_params false`;
-                if (ta.fsdp_min_num_params)              accelerateFlags += ` --fsdp_min_num_params ${ta.fsdp_min_num_params}`;
-                if (ta.fsdp_auto_wrap_policy) {
-                    accelerateFlags += ` --fsdp_auto_wrap_policy ${ta.fsdp_auto_wrap_policy}`;
-                    if (ta.fsdp_auto_wrap_policy === 'TRANSFORMER_BASED_WRAP') {
-                        const cls = (ta.fsdp_transformer_layer_cls_to_wrap || '').trim() || (jobArch.fsdp_transformer_cls || '');
-                        if (cls) accelerateFlags += ` --fsdp_transformer_layer_cls_to_wrap "${cls}"`;
-                    }
-                }
-
-            } else if (mode === 'deepspeed') {
-                accelerateFlags = `--use_deepspeed --num_processes ${validIds.length} --mixed_precision ${mixedPrec}`;
-                const zeroStage = Number.isFinite(Number(ta.zero_stage)) ? Number(ta.zero_stage) : 2;
-                accelerateFlags += ` --zero_stage ${zeroStage}`;
-                if (ta.offload_optimizer_device) {
-                    accelerateFlags += ` --offload_optimizer_device ${ta.offload_optimizer_device}`;
-                }
-                if (ta.offload_optimizer_device === 'nvme' && ta.offload_optimizer_nvme_path) {
-                    accelerateFlags += ` --offload_optimizer_nvme_path "${ta.offload_optimizer_nvme_path}"`;
-                }
-                if (ta.offload_param_device) {
-                    accelerateFlags += ` --offload_param_device ${ta.offload_param_device}`;
-                }
-                if (ta.offload_param_device === 'nvme' && ta.offload_param_nvme_path) {
-                    accelerateFlags += ` --offload_param_nvme_path "${ta.offload_param_nvme_path}"`;
-                }
-                if (ta.zero3_init_flag) {
-                    accelerateFlags += ' --zero3_init_flag true';
-                }
-                if (ta.zero3_save_16bit_model) {
-                    accelerateFlags += ' --zero3_save_16bit_model true';
-                }
-
             } else {
                 accelerateFlags = `--multi_gpu --num_processes ${validIds.length} --mixed_precision ${mixedPrec}`;
             }
@@ -1053,9 +988,6 @@ function buildLaunchConfig(gpuIds, mergedConfig, mergedConfigPath, jobArch) {
             accelerateFlags = `--mixed_precision ${mixedPrec}`;
         }
     }
-
-    if (ta.torch_compile && mode !== 'tp_sp' && mode !== 'fsdp2')
-        accelerateFlags += ' --dynamo_backend inductor';
 
     return { gpuEnv, accelerateFlags, tpTrainCmd };
 }
@@ -1259,12 +1191,6 @@ app.post('/api/jobs/:name/generate', async (req, res) => {
             }
         }
 
-        // Attention support
-        if (req.body.flash_attn) {
-            args.push('--flash_attn');
-        } else if (req.body.sage_attn) {
-            args.push('--sage_attn');
-        }
 
         // Multi-GPU model sharding support
         const genGpuCount = genGpuIdsNormalized ? genGpuIdsNormalized.split(',').length : 0;
@@ -1292,7 +1218,6 @@ app.post('/api/jobs/:name/generate', async (req, res) => {
         // Logic for Persistent vs One-Shot
         if (keepLoaded) {
             const multiGpuMode = req.body.gen_multi_gpu_mode || 'parallel_cfg';
-            const flashAttn = req.body.flash_attn || false;
 
             if (persistentGenProcess && (
                 persistentGenProcess.jobName !== jobName ||
@@ -1322,8 +1247,7 @@ app.post('/api/jobs/:name/generate', async (req, res) => {
                     process: proc, port, jobName,
                     gpuIds: genGpuIdsNormalized,
                     multiGpuMode: multiGpuMode,
-                    flashAttn: req.body.flash_attn || false,
-                    sageAttn: req.body.sage_attn || false
+
                 };
 
                 // Stream output
@@ -1365,9 +1289,7 @@ app.post('/api/jobs/:name/generate', async (req, res) => {
             const payload = {
                 sample_prompts: promptsPath,
                 network_weights: req.body.network_weights ? stripQuotes(req.body.network_weights) : null,
-                network_mul: req.body.network_mul || 1.0,
-                flash_attn: req.body.flash_attn || false,
-                sage_attn: req.body.sage_attn || false
+                network_mul: req.body.network_mul || 1.0
             };
 
             const response = await fetch(`http://localhost:${persistentGenProcess.port}/generate`, {
@@ -1469,7 +1391,7 @@ app.post('/api/jobs/:name/train/start', async (req, res) => {
 
         // TP/SP: strip options that are incompatible with the TP training script.
         const launchMode = mergedConfig.training_arguments?.multigpu_mode
-            || (mergedConfig.training_arguments?.deepspeed ? 'deepspeed' : (mergedConfig.training_arguments?.use_fsdp ? 'fsdp' : 'ddp'));
+            || 'ddp';
         if (launchMode === 'tp_sp' && mergedConfig.training_arguments) {
             mergedConfig.training_arguments.sequence_parallel = true;
             // Normalize tp_degree with NaN guard
@@ -1490,20 +1412,6 @@ app.post('/api/jobs/:name/train/start', async (req, res) => {
             delete mergedConfig.training_arguments.tp_backend;
             delete mergedConfig.training_arguments.tp_degree;
             delete mergedConfig.training_arguments.sequence_parallel;
-        }
-
-        if (mergedConfig.training_arguments && launchMode !== 'deepspeed') {
-            delete mergedConfig.training_arguments.deepspeed;
-            delete mergedConfig.training_arguments.zero_stage;
-            delete mergedConfig.training_arguments.offload_optimizer_device;
-            delete mergedConfig.training_arguments.offload_optimizer_nvme_path;
-            delete mergedConfig.training_arguments.offload_param_device;
-            delete mergedConfig.training_arguments.offload_param_nvme_path;
-            delete mergedConfig.training_arguments.zero3_init_flag;
-            delete mergedConfig.training_arguments.zero3_save_16bit_model;
-            delete mergedConfig.training_arguments.fp16_master_weights_and_gradients;
-        } else if (mergedConfig.training_arguments) {
-            mergedConfig.training_arguments.deepspeed = true;
         }
 
         // Convert Windows paths to WSL paths when running under WSL
@@ -1554,7 +1462,7 @@ app.post('/api/jobs/:name/train/start', async (req, res) => {
         const { gpuEnv, accelerateFlags, tpTrainCmd } = launch;
 
         const resolvedMode = mergedConfig.training_arguments?.multigpu_mode
-            || (mergedConfig.training_arguments?.deepspeed ? 'deepspeed' : (mergedConfig.training_arguments?.use_fsdp ? 'fsdp' : 'ddp'));
+            || 'ddp';
 
         let trainCmd;
         if (resolvedMode === 'tp_sp' && tpTrainCmd) {

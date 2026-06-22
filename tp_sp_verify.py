@@ -17,7 +17,7 @@ Usage (called from anima_train_network_tp_sp.py main block):
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import torch.distributed as dist
+from library.dist_compat import dist
 import logging
 
 logger = logging.getLogger(__name__)

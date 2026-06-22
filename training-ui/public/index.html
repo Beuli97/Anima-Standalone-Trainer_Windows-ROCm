@@ -106,15 +106,8 @@
                             <div class="form-group">
                                 <label>Optimizer</label>
                                 <select id="cfg-optimizer">
-                                    <option value="AdamW8bit">AdamW8bit</option>
                                     <option value="AdamW">AdamW</option>
-                                    <option value="PagedAdamW">PagedAdamW</option>
-                                    <option value="PagedAdamW8bit">PagedAdamW8bit</option>
-                                    <option value="PagedAdamW32bit">PagedAdamW32bit</option>
                                     <option value="Adafactor">Adafactor</option>
-                                    <option value="Lion8bit">Lion8bit</option>
-                                    <option value="PagedLion8bit">PagedLion8bit</option>
-                                    <option value="SGDNesterov8bit">SGDNesterov8bit</option>
                                     <option value="Prodigy">Prodigy</option>
                                     <option value="AdamWScheduleFree">AdamWScheduleFree</option>
                                     <option value="RAdamScheduleFree">RAdamScheduleFree</option>
@@ -229,7 +222,6 @@
                                 <label>Mixed Precision</label>
                                 <select id="cfg-mixed-precision">
                                     <option value="bf16">BFloat16</option>
-                                    <option value="fp16">Float16</option>
                                     <option value="no">Float32</option>
                                 </select>
                             </div>
@@ -237,7 +229,6 @@
                                 <label>Save Precision</label>
                                 <select id="cfg-save-precision">
                                     <option value="bf16">BFloat16</option>
-                                    <option value="fp16">Float16</option>
                                     <option value="float">Float32</option>
                                 </select>
                             </div>
@@ -257,14 +248,6 @@
                                 Checkpointing</label>
                             <small>Trades compute for VRAM savings. Recommended on.</small>
                         </div>
-                        <div class="form-group">
-                            <label><input type="checkbox" id="cfg-flash-attn"> Flash Attention</label>
-                            <small>Requires flash-attn package.</small>
-                        </div>
-                        <div id="group-torch-compile" class="form-group">
-                            <label><input type="checkbox" id="cfg-torch-compile"> Torch Compile</label>
-                            <small>Uses dynamo inductor backend. Slower first step, faster training after.</small>
-                        </div>
                         <div class="form-row">
                             <div class="form-group" style="flex: 1;">
                                 <label><input type="checkbox" id="cfg-lowram"> Low RAM Optimization</label>
@@ -281,7 +264,6 @@
                             <select id="cfg-activation-offload">
                                 <option value="none">None</option>
                                 <option value="cpu">CPU Offload (blocking transfers)</option>
-                                <option value="unsloth">Unsloth Offload (async, faster)</option>
                             </select>
                             <small>Offloads activations to CPU during backward pass. Requires Gradient Checkpointing.</small>
                         </div>
@@ -523,16 +505,6 @@
                                 </div>
                             </div>
 
-                            <div style="display: flex; gap: 15px; margin-top: 12px;">
-                                <div class="form-group">
-                                    <label><input type="checkbox" id="gen-flash-attn"> Flash Attention</label>
-                                    <small>Requires flash-attn.</small>
-                                </div>
-                                <div class="form-group">
-                                    <label><input type="checkbox" id="gen-sage-attn"> Sage Attention</label>
-                                    <small>Better Multi-GPU support.</small>
-                                </div>
-                            </div>
 
                             <div class="form-group" style="margin-top: 12px;">
                                 <label>GPU Selection <span id="gen-gpu-mode-label"
@@ -639,18 +611,10 @@
                             <label style="font-weight: 600;">Parallelism Mode</label>
                             <select id="cfg-multigpu-mode">
                                 <option value="ddp">DDP — Data Parallel (standard)</option>
-                                <option value="fsdp">FSDP1 — Fully Sharded Data Parallel v1</option>
-                                <option value="fsdp2">FSDP2 — Fully Sharded Data Parallel v2 (Linux only)</option>
-                                <option value="deepspeed">DeepSpeed — ZeRO Optimizer Sharding</option>
                                 <option value="tp_sp">TP/SP — Tensor + Sequence Parallel</option>
                             </select>
-                            <small>DDP replicates the full model on each GPU and syncs gradients. FSDP1/FSDP2 shard parameters to reduce VRAM (FSDP2 is the newer, simpler API).</small>
                         </div>
 
-                        <div id="group-cuda-direct" class="form-group disabled-section" style="margin-top: 16px;">
-                            <label><input type="checkbox" id="cfg-use-cuda-direct"> Use CUDA Direct Backend</label>
-                            <small>Windows-only custom backend replacing NCCL for native multi-GPU. Auto-detected in TP/SP mode. Incompatible with Torch Compile.</small>
-                        </div>
 
                         <div id="group-ddp-opts" class="form-group hidden" style="margin-top: 20px;">
                             <label style="font-weight: 600;">DDP Options</label>
@@ -664,199 +628,8 @@
                             </div>
                         </div>
 
-                        <div id="group-fsdp" class="form-group hidden" style="margin-top: 20px;">
-                            <input type="checkbox" id="cfg-use-fsdp" style="display:none;">
 
-                            <div id="fsdp-settings" style="margin-top: 4px; display: flex; flex-direction: column; gap: 15px;">
-                                <div class="form-group">
-                                    <label>Sharding Strategy</label>
-                                    <select id="cfg-fsdp-sharding-strategy">
-                                        <option value="1">FULL_SHARD (1)</option>
-                                        <option value="2">SHARD_GRAD_OP (2)</option>
-                                        <option value="3">NO_SHARD (3)</option>
-                                        <option value="4">HYBRID_SHARD (4) (Non-Windows only)</option>
-                                        <option value="5">HYBRID_SHARD_ZERO2 (5) (Non-Windows only)</option>
-                                    </select>
-                                    <div id="cfg-fsdp-strategy-info" class="hint" style="margin-top: 10px; padding: 10px; background: var(--bg-secondary); border-radius: 4px; border-left: 3px solid var(--accent); line-height: 1.4;">
-                                        Select a strategy to see details.
-                                    </div>
-                                    <small style="margin-top: 8px;">For more information, please refer to the <a href="https://pytorch.org/docs/stable/fsdp.html" target="_blank" style="color: var(--accent); text-decoration: none;">official PyTorch docs</a>.</small>
-                                </div>
-<div class="form-group">
-                                    <label><input type="checkbox" id="cfg-fsdp-offload-params"> CPU Offloading</label>
-                                    <small>Moves parameters to Main System RAM when not in use. Slows down training but drastically reduces VRAM requirements.</small>
-                                </div>
 
-                                <div class="form-group">
-                                    <label><input type="checkbox" id="cfg-fsdp-reshard-after-forward"> Enable Resharding After Forward</label>
-                                    <small>Frees gathered parameters after the forward pass. Highly recommended for maximizing VRAM savings.</small>
-                                </div>
-
-                                <div class="form-group">
-                                    <label><input type="checkbox" id="cfg-fsdp-activation-checkpointing"> Enable FSDP Activation Checkpointing</label>
-                                    <small>Uses FSDP's native activation checkpointing. Can be used alongside standard gradient checkpointing for maximum VRAM savings.</small>
-                                </div>
-
-                                <div class="form-group">
-                                    <label><input type="checkbox" id="cfg-fsdp-cpu-ram-efficient-loading"> CPU RAM Efficient Loading</label>
-                                    <small>Only rank 0 loads the model from disk; other ranks receive weights via broadcast. Reduces peak system RAM by ~50% during startup. Automatically enables Sync Module States (required by accelerate).</small>
-                                </div>
-
-                                <div class="form-group">
-                                    <label title="Overlaps all-gather communication with gradient computation during the backward pass. BACKWARD_PRE fetches the next layer's parameters while computing the current layer's gradients â€” best throughput but uses slightly more peak VRAM. BACKWARD_POST fetches after finishing gradients â€” less overlap but safer. None is sequential and slowest.">Backward Prefetch</label>
-                                    <select id="cfg-fsdp-backward-prefetch">
-                                        <option value="">None (No Prefetch)</option>
-                                        <option value="BACKWARD_PRE">BACKWARD_PRE (Recommended)</option>
-                                        <option value="BACKWARD_POST">BACKWARD_POST</option>
-                                    </select>
-                                    <small>Overlaps parameter all-gather with gradient computation in the backward pass. <strong>BACKWARD_PRE</strong> gives the best throughput by fetching the next layer while computing current gradients. Costs a small VRAM peak.</small>
-                                </div>
-
-                                <div class="form-group">
-                                    <label title="While executing the forward pass through layer N, FSDP simultaneously all-gathers layer N+1's parameters. Reduces forward pass time by overlapping communication with computation. Only safe with static graphs (same layer execution order every step) â€” DiT/UNet architectures qualify."><input type="checkbox" id="cfg-fsdp-forward-prefetch"> Forward Prefetch</label>
-                                    <small>Pre-fetches the next layer's parameters during the forward pass to overlap communication with computation. Safe for DiT/UNet (static graphs). Speeds up forward pass at a small VRAM cost.</small>
-                                </div>
-
-                                <div class="form-group">
-                                    <label title="Keeps references to the original model parameters instead of FSDP's internal flattened FlatParameter. Required when the same FSDP unit contains both frozen and trainable parameters (e.g. frozen UNet with LoRA hooks). Without this, the optimizer and gradient hooks can silently break on mixed requires_grad tensors."><input type="checkbox" id="cfg-fsdp-use-orig-params" checked> Use Original Parameters</label>
-                                    <small>Required for LoRA training. Keeps original parameter references so FSDP handles mixed frozen/trainable parameters (frozen UNet + LoRA hooks) correctly. Disable only if you know the entire model has uniform requires_grad.</small>
-                                </div>
-
-                                <div class="form-group">
-                                    <label title="Throttles in-flight all-gather operations so they don't all queue up at once. Prevents excessive CUDA memory allocation retries caused by too many unsharded parameter buffers being live simultaneously. Recommended to leave enabled."><input type="checkbox" id="cfg-fsdp-limit-all-gathers" checked> Limit All-Gathers</label>
-                                    <small>Prevents too many simultaneous all-gather ops from piling up, reducing CUDA malloc retries and potential OOM spikes. Recommended on.</small>
-                                </div>
-
-                                <div class="form-group">
-                                    <label>Auto Wrap Policy</label>
-                                    <select id="cfg-fsdp-auto-wrap-policy">
-                                        <option value="NO_WRAP">NO_WRAP</option>
-                                        <option value="TRANSFORMER_BASED_WRAP">TRANSFORMER_BASED_WRAP</option>
-                                        <option value="SIZE_BASED_WRAP">SIZE_BASED_WRAP</option>
-                                    </select>
-                                    <small>Determines how FSDP clusters parameters into sharded units. TRANSFORMER_BASED_WRAP is recommended for large models.</small>
-                                </div>
-
-                                <div class="form-group" id="fsdp-size-wrap-group">
-                                    <label>Parameters Threshold</label>
-                                    <input type="number" id="cfg-fsdp-min-num-params" placeholder="100000000" value="100000000">
-                                    <small>Only shards modules with at least this many parameters. Default is 100M (1e8).</small>
-                                </div>
-
-                                <div class="form-group" id="fsdp-layer-wrap-group">
-                                    <label>Transformer Layer to Wrap</label>
-                                    <input type="text" id="cfg-fsdp-layer-to-wrap" placeholder="e.g. Block">
-                                    <small>The exact class name of the transformer block. Required for TRANSFORMER_BASED_WRAP.</small>
-                                </div>
-                            </div>
-                        </div>
-
-                        <!-- FSDP2 Settings — shown when Parallelism Mode = FSDP2 -->
-                        <div id="group-fsdp2" class="form-group hidden" style="margin-top: 20px;">
-                            <div style="margin-bottom: 12px; padding: 10px 12px; background: rgba(255,180,0,0.12); border-left: 3px solid #f0a500; border-radius: 4px; font-size: 0.82rem; line-height: 1.5;">
-                                <strong>Linux only.</strong> This is not available on Windows.
-                            </div>
-                            <div id="fsdp2-settings" style="margin-top: 4px; display: flex; flex-direction: column; gap: 15px;">
-
-                                <div class="form-group">
-                                    <label><input type="checkbox" id="cfg-fsdp2-reshard-after-forward" checked> Reshard After Forward</label>
-                                    <small>When enabled (default), frees unsharded parameters after each forward pass and re-all-gathers them in backward. Maximizes VRAM savings. Disable to keep parameters unsharded between forward and backward — saves one backward all-gather at the cost of higher VRAM.</small>
-                                </div>
-
-                                <div class="form-group">
-                                    <label><input type="checkbox" id="cfg-fsdp2-offload-params"> CPU Offloading</label>
-                                    <small>Moves sharded parameters and gradients to CPU when not in use. Drastically reduces VRAM at the cost of H2D/D2H copy overhead per step.</small>
-                                </div>
-
-                                <div class="form-group">
-                                    <label><input type="checkbox" id="cfg-fsdp2-activation-checkpointing"> Activation Checkpointing</label>
-                                    <small>Frees intermediate activations during forward and recomputes them in backward. Reduces VRAM at the cost of extra compute. Combine with Reshard After Forward for maximum VRAM savings.</small>
-                                </div>
-
-                                <div class="form-group">
-                                    <label><input type="checkbox" id="cfg-fsdp2-cpu-ram-efficient-loading"> CPU RAM Efficient Loading</label>
-                                    <small>Only rank 0 loads the model checkpoint; other ranks receive weights via broadcast. Reduces peak system RAM by ~50% during startup.</small>
-                                </div>
-
-                                <div class="form-group">
-                                    <label>Auto Wrap Policy</label>
-                                    <select id="cfg-fsdp2-auto-wrap-policy">
-                                        <option value="NO_WRAP">NO_WRAP — Wrap root module only</option>
-                                        <option value="TRANSFORMER_BASED_WRAP">TRANSFORMER_BASED_WRAP — Wrap per transformer block</option>
-                                        <option value="SIZE_BASED_WRAP">SIZE_BASED_WRAP — Wrap modules above a parameter threshold</option>
-                                    </select>
-                                    <small>Determines how FSDP2 groups parameters into sharded units. TRANSFORMER_BASED_WRAP is recommended for large DiT/UNet models: each transformer block is all-gathered and reduce-scattered independently, enabling communication/computation overlap.</small>
-                                </div>
-
-                                <div class="form-group hidden" id="fsdp2-size-wrap-group">
-                                    <label>Parameters Threshold</label>
-                                    <input type="number" id="cfg-fsdp2-min-num-params" placeholder="100000000" value="100000000">
-                                    <small>Only shards modules with at least this many parameters. Default is 100M (1e8).</small>
-                                </div>
-
-                                <div class="form-group hidden" id="fsdp2-layer-wrap-group">
-                                    <label>Transformer Layer to Wrap</label>
-                                    <input type="text" id="cfg-fsdp2-layer-to-wrap" placeholder="e.g. Block">
-                                    <small>Exact class name of the transformer block to wrap per-layer. Required for TRANSFORMER_BASED_WRAP.</small>
-                                </div>
-
-                                <div style="margin-top: 4px; padding: 10px; background: var(--bg-secondary); border-radius: 4px; border-left: 3px solid var(--accent); font-size: 0.8rem; line-height: 1.5;">
-                                    <strong>FSDP2 vs FSDP1:</strong> FSDP2 uses <code>torch.distributed.fsdp.fully_shard</code> (PyTorch ≥ 2.4). Parameters are always exposed as originals (no FlatParameter), making it compatible with LoRA. Backward prefetch, forward prefetch, and limit-all-gathers are handled automatically. Sharding strategy is replaced by the single Reshard After Forward toggle.
-                                </div>
-                            </div>
-                        </div>
-
-                        <!-- DeepSpeed Settings — shown when Parallelism Mode = DeepSpeed -->
-                        <div id="group-deepspeed" class="form-group hidden" style="margin-top: 20px;">
-                            <label style="font-weight: 600;">DeepSpeed Options</label>
-                            <div style="margin-top: 12px;">
-                                <label>ZeRO Stage</label>
-                                <select id="cfg-ds-zero-stage">
-                                    <option value="0">Stage 0 (No ZeRO)</option>
-                                    <option value="1">Stage 1 (Optimizer State Sharding)</option>
-                                    <option value="2" selected>Stage 2 (Optimizer + Gradient Sharding)</option>
-                                    <option value="3">Stage 3 (Full Parameter + Optimizer + Gradient Sharding)</option>
-                                </select>
-                                <small>Higher stage saves more VRAM but can increase communication overhead.</small>
-                            </div>
-                            <div style="margin-top: 12px;">
-                                <label>Optimizer Offload Device</label>
-                                <select id="cfg-ds-offload-optimizer-device">
-                                    <option value="none">None</option>
-                                    <option value="cpu">CPU</option>
-                                    <option value="nvme">NVMe</option>
-                                </select>
-                            </div>
-                            <div id="ds-offload-opt-nvme-group" style="margin-top: 10px;" class="hidden">
-                                <label>Optimizer NVMe Path</label>
-                                <input type="text" id="cfg-ds-offload-optimizer-nvme-path" placeholder="/local_nvme">
-                            </div>
-                            <div style="margin-top: 12px;">
-                                <label>Parameter Offload Device</label>
-                                <select id="cfg-ds-offload-param-device">
-                                    <option value="none">None</option>
-                                    <option value="cpu">CPU</option>
-                                    <option value="nvme">NVMe</option>
-                                </select>
-                            </div>
-                            <div id="ds-offload-param-nvme-group" style="margin-top: 10px;" class="hidden">
-                                <label>Parameter NVMe Path</label>
-                                <input type="text" id="cfg-ds-offload-param-nvme-path" placeholder="/local_nvme">
-                            </div>
-                            <div style="margin-top: 12px;">
-                                <label><input type="checkbox" id="cfg-ds-zero3-init-flag"> Enable ZeRO-3 Init</label>
-                            </div>
-                            <div style="margin-top: 10px;">
-                                <label><input type="checkbox" id="cfg-ds-zero3-save-16bit-model"> Save 16-bit Model with ZeRO-3</label>
-                            </div>
-                            <div style="margin-top: 10px;">
-                                <label><input type="checkbox" id="cfg-ds-fp16-master-weights-and-gradients"> FP16 Master Weights and Gradients</label>
-                                <small>Primarily useful for ZeRO-Offload configurations that support this mode.</small>
-                            </div>
-                            <div style="margin-top: 12px; padding: 10px; background: var(--bg-secondary); border-radius: 4px; border-left: 3px solid var(--accent); font-size: 0.8rem; line-height: 1.5;">
-                                <strong>DeepSpeed note:</strong> This mode uses Accelerate DeepSpeed launch options plus existing training arguments.
-                            </div>
-                        </div>
 
                         <!-- TP/SP Settings — shown when Parallelism Mode = TP/SP -->
                         <div id="group-tp-sp" class="form-group hidden" style="margin-top: 20px;">
@@ -883,10 +656,8 @@
                                 <label><input type="checkbox" id="cfg-no-fuse-qkv"> Disable Fused QKV</label>
                                 <small>Debug option. Leaves attention q/k/v projections unfused instead of using the packed QKV/KV TP path.</small>
                             </div>
-                            <div style="margin-top: 12px;">
-                            </div>
                             <div style="margin-top: 12px; padding: 10px; background: var(--bg-secondary); border-radius: 4px; border-left: 3px solid var(--accent); font-size: 0.8rem; line-height: 1.5;">
-                                <strong>TP/SP notes:</strong> All standard training configs (LR, batch size, optimizer, network dim, etc.) work. Sample generation during training is disabled. Backend is selected above. Torch Compile is incompatible.
+                                <strong>TP/SP notes:</strong> All standard training configs (LR, batch size, optimizer, network dim, etc.) work. Sample generation during training is disabled. Backend is selected above.
                             </div>
                         </div>
 

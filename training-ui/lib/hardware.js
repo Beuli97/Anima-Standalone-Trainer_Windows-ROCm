@@ -1,5 +1,7 @@
-const { spawn } = require('child_process');
+﻿const { spawn } = require('child_process');
 const os = require('os');
+const fs = require('fs');
+const path = require('path');
 const WebSocket = require('ws');
 
 const isWindows = process.platform === 'win32';
@@ -95,7 +97,6 @@ function runSingleFlightProbe(state, spawnChild, timeoutMs, parseResult) {
 }
 
 const cpuTempProbeState = { pending: false };
-const gpuStatsProbeState = { pending: false };
 
 function getCpuTemp() {
     return runSingleFlightProbe(
@@ -130,30 +131,44 @@ function getCpuTemp() {
     );
 }
 
-function getGpuStats() {
+// GPU stats via Python/torch — the only backend on Windows + ROCm.
+const pythonGpuStatsProbeState = { pending: false };
+
+function getGpuStatsPython() {
     return runSingleFlightProbe(
-        gpuStatsProbeState,
-        () => spawn('nvidia-smi', [
-            '--query-gpu=index,name,utilization.gpu,memory.used,memory.total,temperature.gpu,power.draw,power.limit',
-            '--format=csv,noheader,nounits'
-        ], { windowsHide: true }),
-        3000,
+        pythonGpuStatsProbeState,
+        () => {
+            const ROOT_DIR = path.resolve(__dirname, '..', '..');
+            // Read venv_path from global_config.toml if available
+            let venvPath = path.join(ROOT_DIR, 'venv');
+            const cfgPath = path.join(__dirname, 'global_config.toml');
+            try {
+                if (fs.existsSync(cfgPath)) {
+                    const raw = fs.readFileSync(cfgPath, 'utf8');
+                    const m = raw.match(/^venv_path\s*=\s*"([^"]*)"/m);
+                    if (m && m[1].trim()) venvPath = m[1].trim();
+                }
+            } catch (_) { /* use default */ }
+
+            const exe = path.join(venvPath, 'Scripts', 'python.exe');
+            const pythonExe = fs.existsSync(exe) ? exe : 'python';
+
+            const script = 'import torch,json;'
+                + 'r=[];'
+                + "[r.append({'index':i,'name':torch.cuda.get_device_name(i),"
+                + "'util':0,"
+                + "'memUsed':round(torch.cuda.memory_allocated(i)/1048576),"
+                + "'memTotal':round(torch.cuda.get_device_properties(i).total_memory/1048576),"
+                + "'temp':0,'powerDraw':0,'powerLimit':0}) "
+                + 'for i in range(torch.cuda.device_count())];'
+                + 'print(json.dumps(r))';
+
+            return spawn(pythonExe, ['-c', script], { windowsHide: true });
+        },
+        5000,
         (stdout) => {
             if (!stdout.trim()) return null;
-
-            return stdout.trim().split('\n').map(line => {
-                const parts = line.split(',').map(s => s.trim());
-                return {
-                    index: parseInt(parts[0]),
-                    name: parts[1],
-                    util: parseInt(parts[2]) || 0,
-                    memUsed: parseInt(parts[3]) || 0,
-                    memTotal: parseInt(parts[4]) || 0,
-                    temp: parseInt(parts[5]) || 0,
-                    powerDraw: Math.round(parseFloat(parts[6])) || 0,
-                    powerLimit: Math.round(parseFloat(parts[7])) || 0
-                };
-            });
+            return JSON.parse(stdout.trim());
         }
     );
 }
@@ -167,8 +182,9 @@ function startHardwareMonitor(wss, getActiveGpus) {
         const cpuPct = getCpuUsagePct();
         const totalMem = os.totalmem();
         const freeMem = os.freemem();
-        const [gpus, cpuTemp] = await Promise.all([getGpuStats(), getCpuTemp()]);
+        let cpuTemp = await getCpuTemp();
 
+        const gpus = await getGpuStatsPython();
         if (gpus === null) return;
 
         const activeGpus = getActiveGpus();

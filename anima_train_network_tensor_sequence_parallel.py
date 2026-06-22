@@ -29,7 +29,7 @@ import time
 from typing import Union
 
 import torch
-import torch.distributed as dist
+from library.dist_compat import dist
 from tqdm import tqdm
 
 from library.device_utils import init_ipex, clean_memory_on_device
@@ -1162,15 +1162,18 @@ def setup_parser() -> argparse.ArgumentParser:
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
-    # Required for async TP collective overlap
+    # Required for async TP collective overlap (NVIDIA only — ROCm/HIP ignores
+    # this env var, so skip the warning on non-NVIDIA GPUs).
+    _is_nvidia = torch.cuda.is_available() and "amd" not in torch.cuda.get_device_name(0).lower()
     _cuda_max_conn = os.environ.get("CUDA_DEVICE_MAX_CONNECTIONS")
-    if _cuda_max_conn is None:
-        os.environ["CUDA_DEVICE_MAX_CONNECTIONS"] = "1"
-    elif _cuda_max_conn != "1":
-        logger.warning(
-            f"CUDA_DEVICE_MAX_CONNECTIONS={_cuda_max_conn!r} (expected '1'). "
-            "Async TP collective overlap may not work correctly."
-        )
+    if _is_nvidia:
+        if _cuda_max_conn is None:
+            os.environ["CUDA_DEVICE_MAX_CONNECTIONS"] = "1"
+        elif _cuda_max_conn != "1":
+            logger.warning(
+                f"CUDA_DEVICE_MAX_CONNECTIONS={_cuda_max_conn!r} (expected '1'). "
+                "Async TP collective overlap may not work correctly."
+            )
 
     parser = setup_parser()
     args = parser.parse_args()

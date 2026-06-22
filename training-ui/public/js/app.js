@@ -13,6 +13,7 @@ let isDraggingBg = false;
 let bgPosPercent = { x: 50, y: 50 };
 let currentSubsets = [];
 let archRegistry = null; // Loaded from /api/architectures
+
 // --- DOM Refs ---
 const $ = (id) => document.getElementById(id);
 const jobListEl = $("job-list");
@@ -340,7 +341,7 @@ function populateConfig(config) {
   // Training
   $("cfg-learning-rate").value = t.learning_rate || "5e-5";
   $("cfg-text-encoder-lr").value = t.text_encoder_lr || "5e-5";
-  $("cfg-optimizer").value = t.optimizer_type || "AdamW8bit";
+  $("cfg-optimizer").value = t.optimizer_type || "AdamW";
   $("cfg-lr-scheduler").value = t.lr_scheduler || "cosine";
   $("cfg-lr-warmup").value = t.lr_warmup_steps ?? 100;
   $("cfg-lr-scheduler-cycles").value = t.lr_scheduler_num_cycles ?? 1;
@@ -385,14 +386,10 @@ function populateConfig(config) {
   $("cfg-workers").value = t.max_data_loader_n_workers ?? 4;
   $("cfg-grad-acc").value = t.gradient_accumulation_steps ?? 1;
   $("cfg-gradient-checkpointing").checked = t.gradient_checkpointing ?? true;
-  $("cfg-flash-attn").checked = t.flash_attn ?? false;
-  $("cfg-torch-compile").checked = t.torch_compile ?? false;
   $("cfg-lowram").checked = t.lowram ?? false;
   $("cfg-blocks-to-swap").value = t.blocks_to_swap ?? 0;
   // Activation offload mode
-  if (t.unsloth_offload_checkpointing) {
-    $("cfg-activation-offload").value = "unsloth";
-  } else if (t.cpu_offload_checkpointing) {
+  if (t.cpu_offload_checkpointing) {
     $("cfg-activation-offload").value = "cpu";
   } else {
     $("cfg-activation-offload").value = "none";
@@ -415,13 +412,11 @@ function populateConfig(config) {
     $("progressive-reso-panel").classList.add("hidden");
     window._pendingProgressiveSchedule = null;
   }
-  $("cfg-use-cuda-direct").checked = t.use_cuda_direct ?? false;
   $("cfg-ddp-gradient-as-bucket-view").checked =
     t.ddp_gradient_as_bucket_view ?? false;
   $("cfg-ddp-static-graph").checked = t.ddp_static_graph ?? false;
-  // Multi-GPU mode selector (ddp/fsdp/fsdp2/deepspeed/tp_sp) — backward compat: infer from use_fsdp
-  const restoredMode =
-    t.multigpu_mode || (t.deepspeed ? "deepspeed" : t.use_fsdp ? "fsdp" : "ddp");
+  // Multi-GPU mode selector (ddp/tp_sp)
+  const restoredMode = t.multigpu_mode || "ddp";
   $("cfg-multigpu-mode").value = restoredMode;
   applyMultiGpuMode(restoredMode);
   // TP/SP options
@@ -429,62 +424,6 @@ function populateConfig(config) {
   if ($("cfg-tp-backend")) $("cfg-tp-backend").value = t.tp_backend || "auto";
   $("cfg-sequence-parallel").checked = true;
   if ($("cfg-no-fuse-qkv")) $("cfg-no-fuse-qkv").checked = t.no_fuse_qkv ?? false;
-  $("cfg-fsdp-sharding-strategy").value = t.fsdp_sharding_strategy || "1";
-  $("cfg-fsdp-offload-params").checked = t.fsdp_offload_params ?? false;
-  $("cfg-fsdp-reshard-after-forward").checked =
-    t.fsdp_reshard_after_forward ?? false;
-  $("cfg-fsdp-activation-checkpointing").checked =
-    t.fsdp_activation_checkpointing ?? false;
-  $("cfg-fsdp-cpu-ram-efficient-loading").checked =
-    t.fsdp_cpu_ram_efficient_loading ?? false;
-  $("cfg-fsdp-backward-prefetch").value = t.fsdp_backward_prefetch || "";
-  $("cfg-fsdp-forward-prefetch").checked = t.fsdp_forward_prefetch ?? false;
-  $("cfg-fsdp-use-orig-params").checked = t.fsdp_use_orig_params ?? true;
-  $("cfg-fsdp-limit-all-gathers").checked = t.fsdp_limit_all_gathers ?? true;
-  $("cfg-fsdp-auto-wrap-policy").value = t.fsdp_auto_wrap_policy || "NO_WRAP";
-  $("cfg-fsdp-min-num-params").value = t.fsdp_min_num_params || "100000000";
-  $("cfg-fsdp-layer-to-wrap").value =
-    t.fsdp_transformer_layer_cls_to_wrap || "";
-  // fsdp-settings is always visible when group-fsdp is shown (mode dropdown controls visibility)
-  $("fsdp-layer-wrap-group").classList.toggle(
-    "hidden",
-    $("cfg-fsdp-auto-wrap-policy").value !== "TRANSFORMER_BASED_WRAP",
-  );
-  $("fsdp-size-wrap-group").classList.toggle(
-    "hidden",
-    $("cfg-fsdp-auto-wrap-policy").value !== "SIZE_BASED_WRAP",
-  );
-  // FSDP2 restore
-  $("cfg-fsdp2-reshard-after-forward").checked = t.fsdp2_reshard_after_forward ?? true;
-  $("cfg-fsdp2-offload-params").checked = t.fsdp2_offload_params ?? false;
-  $("cfg-fsdp2-activation-checkpointing").checked = t.fsdp2_activation_checkpointing ?? false;
-  $("cfg-fsdp2-cpu-ram-efficient-loading").checked = t.fsdp2_cpu_ram_efficient_loading ?? false;
-  $("cfg-fsdp2-auto-wrap-policy").value = t.fsdp2_auto_wrap_policy || "NO_WRAP";
-  $("cfg-fsdp2-min-num-params").value = t.fsdp2_min_num_params || "100000000";
-  $("cfg-fsdp2-layer-to-wrap").value = t.fsdp2_transformer_layer_cls_to_wrap || "";
-  $("fsdp2-layer-wrap-group").classList.toggle(
-    "hidden",
-    $("cfg-fsdp2-auto-wrap-policy").value !== "TRANSFORMER_BASED_WRAP",
-  );
-  $("fsdp2-size-wrap-group").classList.toggle(
-    "hidden",
-    $("cfg-fsdp2-auto-wrap-policy").value !== "SIZE_BASED_WRAP",
-  );
-  // DeepSpeed restore
-  $("cfg-ds-zero-stage").value = String(t.zero_stage ?? 2);
-  $("cfg-ds-offload-optimizer-device").value =
-    t.offload_optimizer_device || "none";
-  $("cfg-ds-offload-optimizer-nvme-path").value =
-    t.offload_optimizer_nvme_path || "";
-  $("cfg-ds-offload-param-device").value = t.offload_param_device || "none";
-  $("cfg-ds-offload-param-nvme-path").value =
-    t.offload_param_nvme_path || "";
-  $("cfg-ds-zero3-init-flag").checked = t.zero3_init_flag ?? false;
-  $("cfg-ds-zero3-save-16bit-model").checked =
-    t.zero3_save_16bit_model ?? false;
-  $("cfg-ds-fp16-master-weights-and-gradients").checked =
-    t.fp16_master_weights_and_gradients ?? false;
-  updateDeepspeedOffloadUI();
   $("cfg-step-profile").checked = t.step_profile ?? false;
   $("cfg-profile-microbatch").checked = t.profile_microbatch ?? false;
   $("cfg-profile-microbatch-group").style.display = (t.step_profile ?? false) ? "" : "none";
@@ -682,15 +621,10 @@ function gatherConfig() {
       gradient_accumulation_steps: safeInt($("cfg-grad-acc").value),
       max_grad_norm: 1.0,
       gradient_checkpointing: $("cfg-gradient-checkpointing").checked,
-      flash_attn: $("cfg-flash-attn").checked,
-      torch_compile: $("cfg-torch-compile").checked,
       lowram: $("cfg-lowram").checked,
       blocks_to_swap: safeInt($("cfg-blocks-to-swap").value),
       ...($("cfg-activation-offload").value === "cpu" && {
         cpu_offload_checkpointing: true,
-      }),
-      ...($("cfg-activation-offload").value === "unsloth" && {
-        unsloth_offload_checkpointing: true,
       }),
       persistent_data_loader_workers: $("cfg-persistent-workers").checked,
       seed: safeInt($("cfg-seed").value),
@@ -709,67 +643,10 @@ function gatherConfig() {
               ...($("cfg-no-fuse-qkv")?.checked ? { no_fuse_qkv: true } : {}),
             }
           : {}),
-      ...(multiGpuMode === "deepspeed" && isMultiGpu
-        ? {
-            deepspeed: true,
-            zero_stage: safeInt($("cfg-ds-zero-stage").value, 2),
-            offload_optimizer_device:
-              $("cfg-ds-offload-optimizer-device").value !== "none"
-                ? $("cfg-ds-offload-optimizer-device").value
-                : undefined,
-            offload_optimizer_nvme_path:
-              $("cfg-ds-offload-optimizer-device").value === "nvme"
-                ? $("cfg-ds-offload-optimizer-nvme-path").value.trim() ||
-                  undefined
-                : undefined,
-            offload_param_device:
-              $("cfg-ds-offload-param-device").value !== "none"
-                ? $("cfg-ds-offload-param-device").value
-                : undefined,
-            offload_param_nvme_path:
-              $("cfg-ds-offload-param-device").value === "nvme"
-                ? $("cfg-ds-offload-param-nvme-path").value.trim() || undefined
-                : undefined,
-            zero3_init_flag: $("cfg-ds-zero3-init-flag").checked,
-            zero3_save_16bit_model: $("cfg-ds-zero3-save-16bit-model").checked,
-            fp16_master_weights_and_gradients: $(
-              "cfg-ds-fp16-master-weights-and-gradients",
-            ).checked,
-          }
-        : { deepspeed: false }),
-      use_cuda_direct: isMultiGpu ? $("cfg-use-cuda-direct").checked : false,
       ddp_gradient_as_bucket_view: isMultiGpu
         ? $("cfg-ddp-gradient-as-bucket-view").checked
         : false,
       ddp_static_graph: isMultiGpu ? $("cfg-ddp-static-graph").checked : false,
-      // FSDP Configs
-      use_fsdp: isMultiGpu
-        ? multiGpuMode === "fsdp" || multiGpuMode === "fsdp2"
-        : false,
-      fsdp_sharding_strategy: $("cfg-fsdp-sharding-strategy").value,
-      fsdp_offload_params: $("cfg-fsdp-offload-params").checked,
-      fsdp_reshard_after_forward: $("cfg-fsdp-reshard-after-forward").checked,
-      fsdp_activation_checkpointing: $("cfg-fsdp-activation-checkpointing")
-        .checked,
-      fsdp_cpu_ram_efficient_loading: $("cfg-fsdp-cpu-ram-efficient-loading")
-        .checked,
-      fsdp_backward_prefetch: $("cfg-fsdp-backward-prefetch").value,
-      fsdp_forward_prefetch: $("cfg-fsdp-forward-prefetch").checked,
-      fsdp_use_orig_params: $("cfg-fsdp-use-orig-params").checked,
-      fsdp_limit_all_gathers: $("cfg-fsdp-limit-all-gathers").checked,
-      fsdp_auto_wrap_policy: $("cfg-fsdp-auto-wrap-policy").value,
-      fsdp_min_num_params: safeInt($("cfg-fsdp-min-num-params").value),
-      fsdp_transformer_layer_cls_to_wrap: $(
-        "cfg-fsdp-layer-to-wrap",
-      ).value.trim(),
-      // FSDP2 Configs
-      fsdp2_reshard_after_forward: $("cfg-fsdp2-reshard-after-forward").checked,
-      fsdp2_offload_params: $("cfg-fsdp2-offload-params").checked,
-      fsdp2_activation_checkpointing: $("cfg-fsdp2-activation-checkpointing").checked,
-      fsdp2_cpu_ram_efficient_loading: $("cfg-fsdp2-cpu-ram-efficient-loading").checked,
-      fsdp2_auto_wrap_policy: $("cfg-fsdp2-auto-wrap-policy").value,
-      fsdp2_min_num_params: safeInt($("cfg-fsdp2-min-num-params").value),
-      fsdp2_transformer_layer_cls_to_wrap: $("cfg-fsdp2-layer-to-wrap").value.trim(),
       // FFT options
       ...($("cfg-training-type").value === "full_finetune" && $("cfg-freeze-llm-adapter").checked
         ? { freeze_llm_adapter: true }
@@ -1336,8 +1213,6 @@ function savePromptTransientSettings() {
   const settings = {
     lora_mul: $("gen-lora-mul").value,
     keep_loaded: $("chk-keep-loaded").checked,
-    flash_attn: $("gen-flash-attn").checked,
-    sage_attn: $("gen-sage-attn").checked,
     global_w: $("global-w").value,
     global_h: $("global-h").value,
     global_s: $("global-s").value,
@@ -1363,10 +1238,6 @@ function loadPromptTransientSettings() {
       $("gen-lora-mul").value = settings.lora_mul;
     if (settings.keep_loaded !== undefined)
       $("chk-keep-loaded").checked = settings.keep_loaded;
-    if (settings.flash_attn !== undefined)
-      $("gen-flash-attn").checked = settings.flash_attn;
-    if (settings.sage_attn !== undefined)
-      $("gen-sage-attn").checked = settings.sage_attn;
     if (settings.global_w !== undefined)
       $("global-w").value = settings.global_w;
     if (settings.global_h !== undefined)
@@ -2607,6 +2478,7 @@ $("btn-create-job").addEventListener("click", async () => {
   selectJob(result.name);
   showToast("Job created");
 });
+
 // Load GPUs from server
 async function loadGPUs() {
   const container = $("cfg-gpu-selection");
@@ -2615,7 +2487,7 @@ async function loadGPUs() {
     container.innerHTML = "";
     if (gpus.length === 0) {
       container.innerHTML =
-        "<small>No NVIDIA GPUs detected (CPU only).</small>";
+        "<small>No GPUs detected (CPU only).</small>";
       return;
     }
     gpus.forEach((gpu) => {
@@ -2658,64 +2530,18 @@ async function loadGPUs() {
 // Show the correct mode panel, hide the others.
 // Panels use only the "hidden" class for visibility — no disabled-section.
 function applyMultiGpuMode(mode) {
-  const ddpGroup   = $("group-ddp-opts");
-  const fsdpGroup  = $("group-fsdp");
-  const fsdp2Group = $("group-fsdp2");
-  const dsGroup    = $("group-deepspeed");
-  const tpGroup    = $("group-tp-sp");
-  if (!ddpGroup || !fsdpGroup || !tpGroup) return;
-
-  ddpGroup.classList.toggle("hidden",   mode !== "ddp");
-  fsdpGroup.classList.toggle("hidden",  mode !== "fsdp");
-  if (fsdp2Group) fsdp2Group.classList.toggle("hidden", mode !== "fsdp2");
-  if (dsGroup) dsGroup.classList.toggle("hidden", mode !== "deepspeed");
-  tpGroup.classList.toggle("hidden",    mode !== "tp_sp");
-
-  // Keep hidden checkbox in sync so reconcileFSDPConflicts still works
-  const fsdpToggle = $("cfg-use-fsdp");
-  if (fsdpToggle) fsdpToggle.checked = (mode === "fsdp" || mode === "fsdp2");
-
-  updateCudaDirectForTpSp();
-  updateDeepspeedOffloadUI();
-}
-
-function updateCudaDirectForTpSp() {
-  const cudaGroup  = $("group-cuda-direct");
-  const cudaToggle = $("cfg-use-cuda-direct");
-  if (!cudaGroup || !cudaToggle) return;
-
-  const mode   = $("cfg-multigpu-mode")?.value;
-  const lockCudaDirect = mode === "tp_sp" || mode === "deepspeed";
-
-  cudaGroup.classList.toggle("disabled-section", lockCudaDirect);
-  cudaToggle.disabled = lockCudaDirect;
-  if (lockCudaDirect) cudaToggle.checked = false;
-}
-
-function updateDeepspeedOffloadUI() {
-  const optDevice = $("cfg-ds-offload-optimizer-device");
-  const paramDevice = $("cfg-ds-offload-param-device");
-  const optNvmeGroup = $("ds-offload-opt-nvme-group");
-  const paramNvmeGroup = $("ds-offload-param-nvme-group");
-  if (!optDevice || !paramDevice || !optNvmeGroup || !paramNvmeGroup) return;
-
-  optNvmeGroup.classList.toggle("hidden", optDevice.value !== "nvme");
-  paramNvmeGroup.classList.toggle("hidden", paramDevice.value !== "nvme");
+  const ddpGroup = $("group-ddp-opts");
+  const tpGroup  = $("group-tp-sp");
+  if (!ddpGroup || !tpGroup) return;
+  ddpGroup.classList.toggle("hidden", mode !== "ddp");
+  tpGroup.classList.toggle("hidden",  mode !== "tp_sp");
 }
 
 function updateMultiGPUUI() {
-  const modeGroup   = $("group-multigpu-mode");
-  const cudaGroup   = $("group-cuda-direct");
-  const cudaToggle  = $("cfg-use-cuda-direct");
-  if (!cudaGroup || !cudaToggle) return;
-
+  const modeGroup = $("group-multigpu-mode");
   const count = document.querySelectorAll('input[name="gpu-select"]:checked').length;
-
   if (count > 1) {
     if (modeGroup) modeGroup.classList.remove("disabled-section");
-    cudaGroup.classList.remove("disabled-section");
-    // Keep tp_degree in sync with actual GPU count — the server uses GPU count
-    // directly, so this just keeps the display honest.
     const tpDegreeInput = $("cfg-tp-degree");
     if (tpDegreeInput) tpDegreeInput.value = count;
     const tpBackend = $("cfg-tp-backend");
@@ -2724,168 +2550,24 @@ function updateMultiGPUUI() {
     if (spToggle) spToggle.checked = true;
     applyMultiGpuMode($("cfg-multigpu-mode")?.value || "ddp");
   } else {
-    // Single GPU — disable mode selector and cuda-direct, hide all panels
     if (modeGroup) modeGroup.classList.add("disabled-section");
-    cudaGroup.classList.add("disabled-section");
-    cudaToggle.checked = false;
-    ["group-ddp-opts", "group-fsdp", "group-fsdp2", "group-deepspeed", "group-tp-sp"].forEach(id => {
+    ["group-ddp-opts", "group-tp-sp"].forEach(id => {
       const el = $(id);
       if (el) el.classList.add("hidden");
     });
-    const fsdpToggle = $("cfg-use-fsdp");
-    if (fsdpToggle) fsdpToggle.checked = false;
   }
 }
 // Global state for restoring manual offloading values
 let lastBlocksValue = "0";
 let lastActivationValue = "none";
-function reconcileFSDPConflicts() {
-  const fsdpToggle = $("cfg-use-fsdp");
-  const cudaDirectToggle = $("cfg-use-cuda-direct");
-  const blocksInput = $("cfg-blocks-to-swap");
-  const activationSelect = $("cfg-activation-offload");
-  const blocksGroup = $("group-blocks-to-swap");
-  const activationGroup = $("group-activation-offload");
-  const strategySelect = $("cfg-fsdp-sharding-strategy");
-  if (!fsdpToggle) return;
-  if (fsdpToggle.checked) {
-    // SAVE CURRENT VALUES before zeroing them (but only if they aren't already 0/none due to a previous toggle)
-    if (blocksInput.value !== "0") lastBlocksValue = blocksInput.value;
-    if (activationSelect.value !== "none")
-      lastActivationValue = activationSelect.value;
-    // FORCE TO 0 / NONE
-    blocksInput.value = "0";
-    activationSelect.value = "none";
-    // DISABLE GROUPS
-    if (blocksGroup) blocksGroup.classList.add("disabled-section");
-    if (activationGroup) activationGroup.classList.add("disabled-section");
-  } else {
-    // RESTORE PREVIOUS VALUES
-    blocksInput.value = lastBlocksValue;
-    activationSelect.value = lastActivationValue;
-    // ENABLE GROUPS
-    if (blocksGroup) blocksGroup.classList.remove("disabled-section");
-    if (activationGroup) activationGroup.classList.remove("disabled-section");
-  }
-  // SHARDING STRATEGY FILTERING (CUDA Direct / Windows compatibility)
-  if (strategySelect) {
-    const h1 = strategySelect.querySelector('option[value="4"]');
-    const h2 = strategySelect.querySelector('option[value="5"]');
-    if (cudaDirectToggle && cudaDirectToggle.checked) {
-      if (h1) h1.disabled = true;
-      if (h2) h2.disabled = true;
-      // If current selection was a hybrid one, reset to FULL_SHARD
-      if (strategySelect.value === "4" || strategySelect.value === "5") {
-        strategySelect.value = "1";
-      }
-    } else {
-      if (h1) h1.disabled = false;
-      if (h2) h2.disabled = false;
-    }
-    // Force update of info box
-    if (window.updateFSDPInfoBox) window.updateFSDPInfoBox();
-  }
-  // TORCH COMPILE vs CUDA DIRECT (mutually exclusive)
-  const torchCompileToggle = $("cfg-torch-compile");
-  const torchCompileGroup = $("group-torch-compile");
-  if (cudaDirectToggle && torchCompileToggle && torchCompileGroup) {
-    if (cudaDirectToggle.checked) {
-      // Save state before disabling
-      if (torchCompileToggle.checked) window._lastTorchCompile = true;
-      torchCompileToggle.checked = false;
-      torchCompileGroup.classList.add("disabled-section");
-    } else {
-      torchCompileGroup.classList.remove("disabled-section");
-      // Restore previous state if it was saved
-      if (window._lastTorchCompile) {
-        torchCompileToggle.checked = true;
-        window._lastTorchCompile = false;
-      }
-    }
-  }
-}
 // Global initialization for extra elements
 document.addEventListener("DOMContentLoaded", () => {
-  const fsdpToggle = $("cfg-use-fsdp");
-  const cudaDirectToggle = $("cfg-use-cuda-direct");
-  const blocksInput = $("cfg-blocks-to-swap");
-  const activationSelect = $("cfg-activation-offload");
-  // EXPOSE for usage in other scripts or reactive functions
-  window.updateFSDPInfoBox = () => {
-    const strategySelect = $("cfg-fsdp-sharding-strategy");
-    const fsdpInfo = $("cfg-fsdp-strategy-info");
-    if (!strategySelect || !fsdpInfo) return;
-    const strategyMap = {
-      1: "<strong>FULL_SHARD</strong>: Shards optimizer states, gradients and parameters across all GPUs. Best for maximum VRAM savings.",
-      2: "<strong>SHARD_GRAD_OP</strong>: Shards optimizer states and gradients (equivalent to ZeRO-2). Faster than FULL_SHARD but uses more VRAM.",
-      3: "<strong>NO_SHARD</strong>: <strong>: Same as DDP</strong> Not recommended for real training",
-      4: "<strong>HYBRID_SHARD</strong>: Shards optimizer states, gradients and parameters within each node while each node has a full copy. Use for multi-node setups.",
-      5: "<strong>HYBRID_SHARD_ZERO2</strong>: Shards optimizer states and gradients within each node while each node has a full copy.",
-    };
-    fsdpInfo.innerHTML =
-      strategyMap[strategySelect.value] || "Select a strategy to see details.";
-  };
-  // Multi-GPU mode selector
   const modeSelect = $("cfg-multigpu-mode");
   if (modeSelect) {
     modeSelect.addEventListener("change", (e) => {
       applyMultiGpuMode(e.target.value);
-      reconcileFSDPConflicts();
     });
   }
-  const dsOptDevice = $("cfg-ds-offload-optimizer-device");
-  const dsParamDevice = $("cfg-ds-offload-param-device");
-  if (dsOptDevice) dsOptDevice.addEventListener("change", updateDeepspeedOffloadUI);
-  if (dsParamDevice) dsParamDevice.addEventListener("change", updateDeepspeedOffloadUI);
-  // fsdpToggle is a hidden input
-  if (cudaDirectToggle) {
-    cudaDirectToggle.addEventListener("change", reconcileFSDPConflicts);
-    // Auto Wrap Policy visibility toggle
-    $("cfg-fsdp-auto-wrap-policy").addEventListener("change", (e) => {
-      $("fsdp-layer-wrap-group").classList.toggle(
-        "hidden",
-        e.target.value !== "TRANSFORMER_BASED_WRAP",
-      );
-      $("fsdp-size-wrap-group").classList.toggle(
-        "hidden",
-        e.target.value !== "SIZE_BASED_WRAP",
-      );
-    });
-    const fsdp2WrapPolicy = $("cfg-fsdp2-auto-wrap-policy");
-    if (fsdp2WrapPolicy) {
-      fsdp2WrapPolicy.addEventListener("change", (e) => {
-        $("fsdp2-layer-wrap-group").classList.toggle(
-          "hidden",
-          e.target.value !== "TRANSFORMER_BASED_WRAP",
-        );
-        $("fsdp2-size-wrap-group").classList.toggle(
-          "hidden",
-          e.target.value !== "SIZE_BASED_WRAP",
-        );
-      });
-    }
-  }
-  // Manual value tracking: Update "last known" value when user changes it MANUALLY
-  if (blocksInput) {
-    blocksInput.addEventListener("change", () => {
-      if (!fsdpToggle || !fsdpToggle.checked)
-        lastBlocksValue = blocksInput.value;
-    });
-  }
-  if (activationSelect) {
-    activationSelect.addEventListener("change", () => {
-      if (!fsdpToggle || !fsdpToggle.checked)
-        lastActivationValue = activationSelect.value;
-    });
-  }
-  const strategySelect = $("cfg-fsdp-sharding-strategy");
-  if (strategySelect) {
-    strategySelect.addEventListener("change", window.updateFSDPInfoBox);
-    window.updateFSDPInfoBox(); // Initial call
-  }
-  updateDeepspeedOffloadUI();
-  // Initial reconcile call
-  reconcileFSDPConflicts();
 });
 // Load GPUs for generation (separate from training GPU selection)
 async function loadGenGPUs() {
@@ -2895,7 +2577,7 @@ async function loadGenGPUs() {
     const gpus = await api("/api/system/gpus");
     container.innerHTML = "";
     if (gpus.length === 0) {
-      container.innerHTML = "<small>No NVIDIA GPUs detected.</small>";
+      container.innerHTML = "<small>No GPUs detected.</small>";
       return;
     }
     gpus.forEach((gpu, i) => {
@@ -3117,8 +2799,6 @@ $("btn-gen-sample").addEventListener("click", async () => {
   }
   // Add Anima generation params
   payload.flow_shift = parseFloat($("cfg-flow-shift").value) || 3.0;
-  payload.flash_attn = $("gen-flash-attn").checked;
-  payload.sage_attn = $("gen-sage-attn").checked;
   payload.gen_gpu_ids = getSelectedGenGPUs();
   payload.gen_multi_gpu_mode = $("gen-multi-gpu-mode").value;
   const result = await api(`/api/jobs/${currentJob}/generate`, {
@@ -3202,7 +2882,6 @@ $("btn-apply-global").addEventListener("click", applyGlobalSettings);
   "gen-lora-select",
   "gen-lora-mul",
   "chk-keep-loaded",
-  "gen-flash-attn",
   "gen-multi-gpu-mode",
   "global-w",
   "global-h",
@@ -3404,21 +3083,6 @@ async function init() {
   );
   // Discard Button
   $("btn-discard").addEventListener("click", discardChanges);
-  // Mutual exclusivity for Flash/Sage Attention
-  const enforceMutualAttention = (flashId, sageId) => {
-    const flash = $(flashId);
-    const sage = $(sageId);
-    if (!flash || !sage) return;
-    flash.addEventListener("change", () => {
-      if (flash.checked) sage.checked = false;
-      if (flashId.startsWith("gen-")) savePromptTransientSettings();
-    });
-    sage.addEventListener("change", () => {
-      if (sage.checked) flash.checked = false;
-      if (flashId.startsWith("gen-")) savePromptTransientSettings();
-    });
-  };
-  enforceMutualAttention("gen-flash-attn", "gen-sage-attn");
   // Restore Job
   const lastJob = localStorage.getItem("lastJob");
   if (lastJob) {
