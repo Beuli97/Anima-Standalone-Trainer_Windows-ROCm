@@ -3,9 +3,10 @@ IMPORTANT
 That Fork is mostly Vibe Coded. Runs on my system without any problems. Stripped away a lot of stuff that isnt compatible or required for ROCm and fixed a few things. Using a 7900XT lora Training with 2.5s/it
 Prerequisites
 
-Python 3.10+ (Python 3.12 recommended)
-Node.js (Required for the Web UI)
-Adrenalin Driver Version 26.6.1 or newer
+## Prerequisites
+- **Python 3.10+** (Python 3.12 recommended)
+- **Node.js** (Required for the Web UI)
+- **Adrenalin Driver Version 26.6.1 or newer**
 
 Installation
 1. Clone the repository or download the zip (Green "<> Code" button)
