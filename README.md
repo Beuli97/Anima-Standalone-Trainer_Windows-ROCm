@@ -1,4 +1,5 @@
 IMPORTANT
+
 That Fork is mostly Vibe Coded. Runs on my system without any problems. Stripped away a lot of stuff that isnt compatible or required for ROCm and fixed a few things. Using a 7900XT lora Training with 2.5s/it
 Prerequisites
 
